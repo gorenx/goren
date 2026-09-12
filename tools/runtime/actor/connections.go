@@ -99,6 +99,32 @@ func connectionAlive(peer *mcpclient.Connection) bool {
 	}
 }
 
+func (owner *connections) list() []ConnectionView {
+	owner.mu.RLock()
+	defer owner.mu.RUnlock()
+	entries := make([]ConnectionView, 0, len(owner.configuration))
+	for _, definition := range owner.configuration {
+		entry := ConnectionView{
+			Name:      definition.ServerName,
+			Transport: definition.Transport,
+			Status:    ConnectionFailed,
+		}
+		if peer := owner.servers[definition.ServerName]; peer != nil && connectionAlive(peer) {
+			entry.Status = ConnectionConnected
+			entry.ToolCount = len(peer.Schemas())
+		}
+		entries = append(entries, entry)
+	}
+	slices.SortFunc(entries, func(left, right ConnectionView) int { return strings.Compare(left.Name, right.Name) })
+	return entries
+}
+
+func (owner *connections) find(name string) *mcpclient.Connection {
+	owner.mu.RLock()
+	defer owner.mu.RUnlock()
+	return owner.servers[name]
+}
+
 func (owner *connections) changed() bool {
 	if owner == nil {
 		return false
@@ -182,7 +208,14 @@ func (owner *connections) close(ctx context.Context) error {
 	if owner == nil {
 		return nil
 	}
-	return owner.release(ctx, nil)
+	if err := owner.release(ctx, nil); err != nil {
+		return err
+	}
+	owner.mu.Lock()
+	owner.servers = nil
+	owner.configuration = nil
+	owner.mu.Unlock()
+	return nil
 }
 
 func (owner *connections) release(ctx context.Context, retained map[tools.ProviderID]struct{}) error {

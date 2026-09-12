@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mark3labs/mcp-go/client/transport"
+	sdktransport "github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -64,16 +64,16 @@ func contextWithToolResultCapture(
 }
 
 type protocolTransport struct {
-	target         transport.Interface
+	target         sdktransport.Interface
 	requestTimeout time.Duration
 	skipDiscover   bool
 }
 
 func newProtocolTransport(
-	target transport.Interface,
+	target sdktransport.Interface,
 	requestTimeout time.Duration,
 	skipDiscover ...bool,
-) (transport.Interface, error) {
+) (sdktransport.Interface, error) {
 	if target == nil {
 		return nil, errors.New("mcpclient: transport is required")
 	}
@@ -87,8 +87,8 @@ func newProtocolTransport(
 	if len(skipDiscover) > 0 {
 		base.skipDiscover = skipDiscover[0]
 	}
-	bidirectional, supportsBidirectional := target.(transport.BidirectionalInterface)
-	httpConnection, supportsHTTP := target.(transport.HTTPConnection)
+	bidirectional, supportsBidirectional := target.(sdktransport.BidirectionalInterface)
+	httpConnection, supportsHTTP := target.(sdktransport.HTTPConnection)
 	switch {
 	case supportsBidirectional && supportsHTTP:
 		return &protocolHTTPBidirectionalTransport{
@@ -117,15 +117,20 @@ func (wire *protocolTransport) Start(requestContext context.Context) error {
 
 func (wire *protocolTransport) SendRequest(
 	requestContext context.Context,
-	request transport.JSONRPCRequest,
-) (*transport.JSONRPCResponse, error) {
+	request sdktransport.JSONRPCRequest,
+) (*sdktransport.JSONRPCResponse, error) {
 	if request.Method == string(mcp.MethodInitialize) {
 		return nil, errors.New("mcpclient: unsupported protocol version; legacy initialize is forbidden")
 	}
 	if request.Method == string(mcp.MethodServerDiscover) && wire.skipDiscover {
 		// SDK v1.0.0 has no stateless initialization API. This local facade only
 		// primes SDK metadata; remote acceptance is checked by the first tools/list.
-		return transport.NewJSONRPCResultResponse(request.ID, json.RawMessage(`{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{}}`)), nil
+		return sdktransport.NewJSONRPCResultResponse(
+			request.ID,
+			json.RawMessage(
+				`{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{}}`,
+			),
+		), nil
 	}
 	operationContext := requestContext
 	cancel := func() {}
@@ -144,15 +149,20 @@ func (wire *protocolTransport) SendRequest(
 		return nil, errors.New("mcpclient: response ID does not match request")
 	}
 	if err != nil && operationContext.Err() != nil {
-		if _, stdio := wire.target.(*transport.Stdio); stdio {
-			cleanup, release := context.WithTimeout(context.WithoutCancel(requestContext), min(wire.requestTimeout, time.Second))
+		if _, stdio := wire.target.(*sdktransport.Stdio); stdio {
+			cleanup, release := context.WithTimeout(
+				context.WithoutCancel(requestContext),
+				min(wire.requestTimeout, time.Second),
+			)
 			defer release()
 			notification := mcp.JSONRPCNotification{
 				JSONRPC: mcp.JSONRPC_VERSION,
 				Notification: mcp.Notification{
 					Method: "notifications/cancelled",
 					Params: mcp.NotificationParams{
-						AdditionalFields: map[string]any{"requestId": request.ID.Value()},
+						AdditionalFields: map[string]any{
+							"requestId": request.ID.Value(),
+						},
 					},
 				},
 			}
@@ -181,7 +191,8 @@ func (wire *protocolTransport) SendRequest(
 		if decodeErr := json.Unmarshal(response.Result, &envelope); decodeErr != nil {
 			return nil, errors.New("mcpclient: invalid protocol result")
 		}
-		if request.Method == string(mcp.MethodServerDiscover) && !slices.Contains(envelope.SupportedVersions, protocolVersion) {
+		if request.Method == string(mcp.MethodServerDiscover) &&
+			!slices.Contains(envelope.SupportedVersions, protocolVersion) {
 			return nil, errors.New("mcpclient: unsupported protocol version in discovery")
 		}
 		if request.Method != string(mcp.MethodToolsCall) && envelope.ResultType != "complete" {
@@ -208,12 +219,15 @@ func (wire *protocolTransport) SendRequest(
 }
 
 type exchangeResult struct {
-	response *transport.JSONRPCResponse
+	response *sdktransport.JSONRPCResponse
 	err      error
 }
 
-func (wire *protocolTransport) exchange(ctx context.Context, request transport.JSONRPCRequest) (*transport.JSONRPCResponse, error) {
-	if _, stdio := wire.target.(*transport.Stdio); !stdio {
+func (wire *protocolTransport) exchange(
+	ctx context.Context,
+	request sdktransport.JSONRPCRequest,
+) (*sdktransport.JSONRPCResponse, error) {
+	if _, stdio := wire.target.(*sdktransport.Stdio); !stdio {
 		return wire.target.SendRequest(ctx, request)
 	}
 	settled := make(chan exchangeResult, 1)
@@ -292,18 +306,18 @@ func (wire *protocolTransport) GetSessionId() string {
 
 type protocolBidirectionalTransport struct {
 	*protocolTransport
-	bidirectional transport.BidirectionalInterface
+	bidirectional sdktransport.BidirectionalInterface
 }
 
 func (wire *protocolBidirectionalTransport) SetRequestHandler(
-	handler transport.RequestHandler,
+	handler sdktransport.RequestHandler,
 ) {
 	wire.bidirectional.SetRequestHandler(handler)
 }
 
 type protocolHTTPTransport struct {
 	*protocolTransport
-	httpConnection transport.HTTPConnection
+	httpConnection sdktransport.HTTPConnection
 }
 
 func (wire *protocolHTTPTransport) SetProtocolVersion(version string) {
@@ -319,12 +333,12 @@ func (wire *protocolHTTPTransport) RequiresLegacyProtocol() bool {
 
 type protocolHTTPBidirectionalTransport struct {
 	*protocolTransport
-	bidirectional  transport.BidirectionalInterface
-	httpConnection transport.HTTPConnection
+	bidirectional  sdktransport.BidirectionalInterface
+	httpConnection sdktransport.HTTPConnection
 }
 
 func (wire *protocolHTTPBidirectionalTransport) SetRequestHandler(
-	handler transport.RequestHandler,
+	handler sdktransport.RequestHandler,
 ) {
 	wire.bidirectional.SetRequestHandler(handler)
 }

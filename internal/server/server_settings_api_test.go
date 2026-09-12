@@ -42,7 +42,7 @@ func settingsHTTP(t *testing.T, ctx context.Context, process *Server, method str
 	return view
 }
 
-func TestSettingsHTTPPersistsAppliesRetriesAndRestoresMCP(t *testing.T) {
+func TestSettingsHTTPPublishesAndRestoresMCPWithoutOpeningConnections(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
 	first := &mcpSource{}
@@ -110,44 +110,40 @@ func TestSettingsHTTPPersistsAppliesRetriesAndRestoresMCP(t *testing.T) {
 			},
 		})
 	}
-	previous := managerProvider(t, process.mcp, "fixture").ProviderID()
+	if first.listens.Load() != 0 {
+		t.Fatal("Server opened MCP before a Session existed")
+	}
 	target := mcpHTTPConfig("fixture", secondHTTP.URL)
 	view := save(0, target, true)
 	fixtureRevision := view.Revision
-	if view.ApplyError != "" ||
-		view.AppliedRevision == nil ||
-		*view.AppliedRevision != view.Revision {
-		t.Fatalf("MCP target did not apply: %+v", view)
+	if view.ApplyError != "" || view.AppliedRevision == nil || *view.AppliedRevision != view.Revision {
+		t.Fatalf("MCP configuration was not published: %+v", view)
 	}
-	if managerProvider(t, process.mcp, "fixture").ProviderID() == previous {
-		t.Fatal("Settings HTTP did not replace the actual MCP connection")
+	if definitions := mcpDefinitions(t, ctx, process); len(definitions) != 1 || definitions["fixture"].URL != secondHTTP.URL {
+		t.Fatal("Settings HTTP did not publish the replacement target")
 	}
 	view = save(0, mcpHTTPConfig("broken", brokenHTTP.URL), true)
-	if view.ApplyError == "" ||
-		view.AppliedRevision == nil ||
-		*view.AppliedRevision == view.Revision {
-		t.Fatal("failed MCP application was reported applied")
+	if view.ApplyError != "" || view.AppliedRevision == nil || *view.AppliedRevision != view.Revision {
+		t.Fatal("unavailable endpoint prevented configuration publication")
 	}
-	broken.unavailable.Store(false)
 	retried := settingsHTTP(t, ctx, process, "settings.retryApplication", map[string]any{
 		"ns":               "mcp",
 		"name":             "broken",
 		"expectedRevision": view.Revision,
 	})
-	if retried.Revision != view.Revision ||
-		retried.ApplyError != "" ||
-		*retried.AppliedRevision != retried.Revision {
-		t.Fatalf("saved target retry=%+v", retried)
+	if retried.Revision != view.Revision || retried.ApplyError != "" || *retried.AppliedRevision != retried.Revision {
+		t.Fatalf("configuration publication retry=%+v", retried)
 	}
-	if len(process.mcp.listConnections()) != 2 {
-		t.Fatal("retry did not install the saved connection")
+	if first.listens.Load() != 0 || second.listens.Load() != 0 || broken.listens.Load() != 0 {
+		t.Fatal("Settings acquired network connections")
 	}
 	if err := process.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
 	process = start()
-	if len(process.mcp.listConnections()) != 2 {
-		t.Fatal("restart did not load the persisted HTTP target")
+	definitions := mcpDefinitions(t, ctx, process)
+	if len(definitions) != 2 || definitions["fixture"].URL != secondHTTP.URL || definitions["broken"].URL != brokenHTTP.URL {
+		t.Fatal("restart did not publish the persisted HTTP targets")
 	}
 	if process.settings.Provider.APIKeyEnv == nil || *process.settings.Provider.APIKeyEnv != "SETTINGS_TEST_API_KEY" {
 		t.Fatal("restart did not apply persisted Provider configuration")
@@ -156,37 +152,28 @@ func TestSettingsHTTPPersistsAppliesRetriesAndRestoresMCP(t *testing.T) {
 		"expectedRevision": retried.Revision,
 		"name":             "broken",
 	})
-	if view.ApplyError != "" || *view.AppliedRevision != view.Revision {
-		t.Fatalf("reset did not apply: %+v", view)
-	}
-	if len(process.mcp.listConnections()) != 1 || managerProvider(t, process.mcp, "fixture") == nil {
-		t.Fatal("clearing broken group changed the fixture group")
+	if view.ApplyError != "" || *view.AppliedRevision != view.Revision || len(mcpDefinitions(t, ctx, process)) != 1 {
+		t.Fatalf("reset did not publish the remaining configuration: %+v", view)
 	}
 	view = settingsHTTP(t, ctx, process, "settings.resetMCP", settingsapi.ResetMCPRequest{
 		Name:             "fixture",
 		ExpectedRevision: fixtureRevision,
 	})
-	if view.ApplyError != "" {
-		t.Fatalf("fixture reset: %+v", view)
-	}
-	process.mcp.mu.RLock()
-	current := process.mcp.entries["fixture"]
-	count := len(process.mcp.entries)
-	process.mcp.mu.RUnlock()
-	if count != 1 || current.config.URL != firstHTTP.URL {
+	if view.ApplyError != "" || mcpDefinitions(t, ctx, process)["fixture"].URL != firstHTTP.URL {
 		t.Fatal("reset did not restore the local HTTP baseline")
 	}
 	view = save(view.Revision, mcpHTTPConfig("fixture", firstHTTP.URL), false)
-	if view.ApplyError != "" || len(process.mcp.listConnections()) != 0 {
-		t.Fatal("disabled named HTTP connection was not applied")
+	if view.ApplyError != "" || len(mcpDefinitions(t, ctx, process)) != 0 {
+		t.Fatal("disabled named HTTP configuration was not published")
 	}
 	if err := process.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
 	process = start()
-	if len(process.mcp.listConnections()) != 0 {
-		t.Fatal("restart discarded disabled named connection")
+	if len(mcpDefinitions(t, ctx, process)) != 0 || first.listens.Load() != 0 || second.listens.Load() != 0 || broken.listens.Load() != 0 {
+		t.Fatal("restart discarded disabled configuration or opened a network connection")
 	}
+
 }
 
 func TestPromptBaselineUpdateReachesExistingSessionNextTurn(t *testing.T) {
@@ -476,4 +463,24 @@ func TestSettingsHTTPToolUpdatePreservesTurnAndSurvivesRestart(t *testing.T) {
 		!*policy.Visible {
 		t.Fatal("reset did not apply the local tool group")
 	}
+}
+
+func mcpDefinitions(t *testing.T, ctx context.Context, process *Server) map[string]mcpclient.Config {
+	t.Helper()
+	address, err := goakt.GrainOf[*catalogactor.RegistryGrain](ctx, process.system, catalogactor.RegistryName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := process.system.AskGrain(ctx, address, catalogactor.ReadConfiguration{
+		SessionID: "configuration-probe",
+	}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := payload.(catalogactor.Configuration)
+	definitions := make(map[string]mcpclient.Config)
+	for _, definition := range result.Value.Global.MCP {
+		definitions[definition.ServerName] = definition
+	}
+	return definitions
 }

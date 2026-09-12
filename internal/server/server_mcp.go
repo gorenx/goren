@@ -3,63 +3,68 @@ package server
 import (
 	"context"
 	"errors"
+	"slices"
 	"time"
 
 	"github.com/gorenx/goren/mcpclient"
-	"github.com/gorenx/goren/tools"
 	toolregistry "github.com/gorenx/goren/tools/registry"
 	registryactor "github.com/gorenx/goren/tools/registry/actor"
-	"github.com/gorenx/goren/tools/tool"
-	"github.com/gorenx/goren/userquestions"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
-func (owner *Server) initializeMCP(ctx context.Context, questions userquestions.UserQuestions) ([]tool.ProviderSource, error) {
-	directory, err := goakt.GrainOf[*registryactor.RegistryGrain](ctx, owner.system, registryactor.RegistryName, goakt.WithLongLivedGrain())
-	if err != nil {
-		return nil, err
-	}
-	owner.mcp = newMCPManager(owner.system, directory, owner.settings.Timeout, questions)
-	payload, err := owner.system.AskGrain(ctx, owner.mcpIdentity, bindMCP{
-		manager: owner.mcp,
-	}, owner.settings.Timeout)
-	if err != nil {
-		return nil, err
-	}
-	result, valid := payload.(mcpReply)
-	if !valid {
-		return nil, errors.New("server: invalid MCP binding reply")
-	}
-	if result.err != nil {
-		return nil, result.err
-	}
-	for _, settings := range owner.settings.MCP {
-		if _, err := owner.mcp.connect(ctx, settings); err != nil {
-			return nil, err
-		}
-	}
-	return []tool.ProviderSource{owner.mcp}, nil
+// mcpSettings publishes configuration values only. Session Tool Runtimes own I/O.
+type mcpSettings struct {
+	system   goakt.ActorSystem
+	registry *goakt.GrainIdentity
+	timeout  time.Duration
+	local    []mcpclient.Config
+	reserved []mcpclient.Config
 }
 
-func publishMCP(ctx context.Context, system goakt.ActorSystem, directory *goakt.GrainIdentity, timeout time.Duration, name string, connection *mcpclient.Connection) error {
-	configuration := toolregistry.Catalog{}
-	if connection != nil {
-		configuration.Schemas = connection.Schemas()
-		configuration.ProviderIDs = make(map[string]tools.ProviderID, len(configuration.Schemas))
-		for _, entry := range configuration.Schemas {
-			configuration.ProviderIDs[entry.Name] = connection.ProviderID()
-		}
+func (source mcpSettings) ValidateMCP(ctx context.Context, definitions []mcpclient.Config) error {
+	if ctx == nil {
+		return errors.New("server: MCP configuration context is required")
 	}
-	payload, err := system.AskGrain(ctx, directory, registryactor.RegisterSource{
-		Name:    name,
-		Catalog: configuration,
-	}, timeout)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	names := make(map[string]struct{}, len(source.reserved)+len(definitions))
+	for _, definition := range source.reserved {
+		names[definition.ServerName] = struct{}{}
+	}
+	for _, definition := range definitions {
+		configuration, err := definition.Validate()
+		if err != nil {
+			return err
+		}
+		if configuration.Transport != "streamable-http" {
+			return errors.New("server: editable MCP configuration requires HTTP")
+		}
+		if _, found := names[configuration.ServerName]; found {
+			return errors.New("server: duplicate or reserved MCP connection name")
+		}
+		names[configuration.ServerName] = struct{}{}
+	}
+	return nil
+}
+
+func (source mcpSettings) ApplyMCP(ctx context.Context, definitions []mcpclient.Config) error {
+	if err := source.ValidateMCP(ctx, definitions); err != nil {
+		return err
+	}
+	configuration := toolregistry.Catalog{
+		MCP: append(slices.Clone(source.local), definitions...),
+	}
+	payload, err := source.system.AskGrain(ctx, source.registry, registryactor.RegisterSource{
+		Name:    "settings.mcp",
+		Catalog: configuration.Clone(),
+	}, source.timeout)
 	if err != nil {
 		return err
 	}
 	result, valid := payload.(registryactor.Completion)
 	if !valid {
-		return errors.New("server: invalid MCP catalog publication reply")
+		return errors.New("server: invalid MCP configuration publication reply")
 	}
 	return result.Err
 }

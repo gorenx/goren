@@ -14,13 +14,11 @@ type PromptUpdater interface {
 	ApplyPrompt(context.Context, string, systemprompt.Config) error
 }
 
-// MCPConnections owns reconciliation, publication and release of HTTP targets.
-// Success means the entire target is applied. Partial failure returns an error
-// and remains observable through the MCP owner's connection directory.
-type MCPConnections interface {
-	// Validate checks owner constraints without acquiring network resources.
-	Validate(context.Context, []mcpclient.Config) error
-	Reconcile(context.Context, []mcpclient.Config) error
+// MCPUpdater validates and publishes the complete HTTP connection configuration.
+// Success confirms catalog acceptance, not network connectivity in every Session.
+type MCPUpdater interface {
+	ValidateMCP(context.Context, []mcpclient.Config) error
+	ApplyMCP(context.Context, []mcpclient.Config) error
 }
 
 // ToolUpdater checks exposed tool identities and applies complete editable flags.

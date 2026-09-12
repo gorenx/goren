@@ -6,11 +6,11 @@ import { useI18n } from '../i18n'
 interface MCPView {
   serverName: string
   transport: string
-  status: 'connected' | 'failed'
+  status: 'connected' | 'failed' | 'reconnecting'
   toolCount: number
 }
 
-export function MCPDialog({ onClose }: { onClose: () => void }): React.JSX.Element {
+export function MCPDialog({ sessionId, onClose, onOpenSettings }: { sessionId?: string; onClose: () => void; onOpenSettings: () => void }): React.JSX.Element {
   const { translate } = useI18n()
   const translateRef = useRef(translate)
   translateRef.current = translate
@@ -20,26 +20,24 @@ export function MCPDialog({ onClose }: { onClose: () => void }): React.JSX.Eleme
   const pending = useRef(false)
   const [api] = useState(() => new HarnessAPI(() => {}, () => {}, () => {}, (key, values) => translateRef.current(key, values)))
   const lifetime = useRef<AbortController | undefined>(undefined)
-  const input = useRef<HTMLInputElement>(null)
-  const [name, setName] = useState('')
-  const [url, setURL] = useState('')
   const [views, setViews] = useState<MCPView[]>()
-  const [busy, setBusy] = useState(false)
+  const [retrying, setRetrying] = useState<string>()
   const [failed, setFailed] = useState(false)
 
   useEffect(() => {
     const controller = new AbortController()
     lifetime.current = controller
-    input.current?.focus()
+    generation.current++
+    pending.current = false
+    setViews(undefined)
+    setRetrying(undefined)
+    setFailed(false)
     let timer: ReturnType<typeof setTimeout>
     const refresh = async (): Promise<void> => {
-      if (pending.current) {
-        timer = setTimeout(() => void refresh(), 3000)
-        return
-      }
+      if (sessionId === undefined) return
       const captured = generation.current
       try {
-        const current = await api.call<MCPView[]>('mcp.list', {}, controller.signal)
+        const current = await api.call<MCPView[]>('mcp.list', { sessionId }, controller.signal)
         if (!controller.signal.aborted && captured === generation.current) setViews(current)
       } catch {
         if (!controller.signal.aborted && captured === generation.current) setFailed(true)
@@ -55,29 +53,26 @@ export function MCPDialog({ onClose }: { onClose: () => void }): React.JSX.Eleme
       clearTimeout(timer)
       document.removeEventListener('keydown', escape)
     }
-  }, [api])
+  }, [api, sessionId])
 
-  const perform = async (method: 'mcp.connect' | 'mcp.disconnect', payload: object): Promise<void> => {
+  const retry = async (serverName: string): Promise<void> => {
     const signal = lifetime.current?.signal
-    if (pending.current) return
+    if (pending.current || sessionId === undefined) return
     pending.current = true
-    generation.current++
-    setBusy(true)
+    const captured = ++generation.current
+    setRetrying(serverName)
     setFailed(false)
     try {
-      await api.call(method, payload, signal)
-      const current = await api.call<MCPView[]>('mcp.list', {}, signal)
-      if (signal?.aborted) return
-      setViews(current)
-      if (method === 'mcp.connect') {
-        setName('')
-        setURL('')
-      }
+      await api.call('mcp.retry', { sessionId, serverName }, signal)
+      const current = await api.call<MCPView[]>('mcp.list', { sessionId }, signal)
+      if (!signal?.aborted && captured === generation.current) setViews(current)
     } catch {
-      if (!signal?.aborted) setFailed(true)
+      if (!signal?.aborted && captured === generation.current) setFailed(true)
     } finally {
-      pending.current = false
-      if (!signal?.aborted) setBusy(false)
+      if (captured === generation.current) {
+        pending.current = false
+        if (!signal?.aborted) setRetrying(undefined)
+      }
     }
   }
 
@@ -91,23 +86,19 @@ export function MCPDialog({ onClose }: { onClose: () => void }): React.JSX.Eleme
           </div>
           <button type="button" className="icon-button" aria-label={translate('mcp.close')} onClick={onClose}><CloseIcon size={16} /></button>
         </header>
-        <form className="space-y-3 p-5" onSubmit={event => { event.preventDefault(); void perform('mcp.connect', { serverName: name.trim(), url: url.trim() }) }}>
-          <p className="text-xs leading-5 text-secondary">{translate('mcp.scope')}</p>
-          <label className="block text-xs text-secondary" htmlFor="mcp-name">{translate('mcp.name')}</label>
-          <input ref={input} id="mcp-name" className="credential-input" required maxLength={128} autoComplete="off" placeholder="my-tools" value={name} disabled={busy} onChange={event => setName(event.target.value)} />
-          <label className="block text-xs text-secondary" htmlFor="mcp-url">{translate('mcp.url')}</label>
-          <input id="mcp-url" className="credential-input" type="url" required pattern="https?://.+" autoComplete="off" placeholder="http://localhost:3000/mcp" value={url} disabled={busy} onChange={event => setURL(event.target.value)} />
+        <div className="space-y-3 p-5">
+          <p className="text-xs leading-5 text-secondary">{sessionId === undefined ? translate('mcp.selectSession') : translate('mcp.scope', { sessionId })}</p>
           {failed && <p role="alert" className="text-xs text-red-600">{translate('mcp.failure')}</p>}
-          <div className="flex justify-end"><button type="submit" className="credential-save" disabled={busy || name.trim() === '' || url.trim() === ''}>{translate(busy ? 'mcp.connecting' : 'mcp.connect')}</button></div>
-        </form>
+          <button type="button" className="credential-save" onClick={onOpenSettings}>{translate('mcp.settings')}</button>
+        </div>
         <div className="space-y-3 border-t border-black/[0.06] p-5" aria-live="polite">
-          {views === undefined ? <p className="text-xs text-tertiary">{translate('mcp.loading')}</p> : views.length === 0 ? <p className="text-xs text-tertiary">{translate('mcp.empty')}</p> : views.map(view => (
+          {sessionId === undefined ? null : views === undefined ? <p className="text-xs text-tertiary">{translate('mcp.loading')}</p> : views.length === 0 ? <p className="text-xs text-tertiary">{translate('mcp.empty')}</p> : views.map(view => (
             <div key={view.serverName} className="flex items-center gap-3 rounded-xl bg-black/[0.025] p-3">
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-medium text-ink">{view.serverName}</p>
-                <p className="mt-1 text-xs text-tertiary">{view.status === 'connected' ? translate('mcp.connected', { count: view.toolCount }) : translate('mcp.failed')}</p>
+                <p className="mt-1 text-xs text-tertiary">{retrying === view.serverName || view.status === 'reconnecting' ? translate('mcp.reconnecting') : view.status === 'connected' ? translate('mcp.connected', { count: view.toolCount }) : translate('mcp.failed')}</p>
               </div>
-              <button type="button" className="credential-remove" disabled={busy} onClick={() => void perform('mcp.disconnect', { serverName: view.serverName })}>{translate('mcp.disconnect')}</button>
+              <button type="button" className="credential-remove" disabled={retrying !== undefined || view.status === 'reconnecting'} onClick={() => void retry(view.serverName)}>{translate('mcp.retry')}</button>
             </div>
           ))}
         </div>

@@ -19,7 +19,7 @@ type Service struct {
 	target       Directory
 	storage      Store
 	prompts      PromptUpdater
-	connections  MCPConnections
+	connections  MCPUpdater
 	toolsets     ToolUpdater
 	applications map[Group]Application
 }
@@ -32,7 +32,7 @@ func NewService(
 	initial State,
 	storage Store,
 	prompts PromptUpdater,
-	connections MCPConnections,
+	connections MCPUpdater,
 	toolsets ToolUpdater,
 ) (*Service, error) {
 	if storage == nil ||
@@ -187,7 +187,7 @@ func (owner *Service) commit(ctx context.Context, identifier Group, overrides Di
 		return owner.Snapshot(), nil
 	}
 	if identifier.Section == MCPSection {
-		if err := owner.connections.Validate(ctx, resolved.MCPConnections()); err != nil {
+		if err := owner.connections.ValidateMCP(ctx, resolved.MCPConnections()); err != nil {
 			return owner.Snapshot(), err
 		}
 	}

@@ -31,14 +31,17 @@ import (
 // mcpServer implements the wire boundary only. Runtime, ToolActors, Provider
 // resolution and the complete tool-call protocol remain production code.
 type mcpServer struct {
-	result      string
-	names       atomic.Pointer[[]string]
-	notices     chan struct{}
-	disconnect  chan struct{}
-	listens     atomic.Int32
-	closed      atomic.Int32
-	calls       atomic.Int32
-	unavailable atomic.Bool
+	result         string
+	names          atomic.Pointer[[]string]
+	notices        chan struct{}
+	disconnect     chan struct{}
+	listens        atomic.Int32
+	closed         atomic.Int32
+	calls          atomic.Int32
+	unavailable    atomic.Bool
+	pauseDiscovery atomic.Bool
+	discovering    chan struct{}
+	resume         chan struct{}
 }
 
 func (remote *mcpServer) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -60,6 +63,17 @@ func (remote *mcpServer) ServeHTTP(writer http.ResponseWriter, request *http.Req
 	}
 	switch envelope.Method {
 	case "server/discover":
+		if remote.pauseDiscovery.Load() {
+			select {
+			case remote.discovering <- struct{}{}:
+			default:
+			}
+			select {
+			case <-remote.resume:
+			case <-request.Context().Done():
+				return
+			}
+		}
 		respond(`{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{"tools":{"listChanged":true}}}`)
 	case "tools/list":
 		definitions := make([]json.RawMessage, 0)
@@ -96,9 +110,11 @@ func (remote *mcpServer) ServeHTTP(writer http.ResponseWriter, request *http.Req
 func serveMCP(t *testing.T, result string) (*mcpServer, mcpclient.Config) {
 	t.Helper()
 	remote := &mcpServer{
-		result:     result,
-		notices:    make(chan struct{}, 1),
-		disconnect: make(chan struct{}),
+		result:      result,
+		notices:     make(chan struct{}, 1),
+		disconnect:  make(chan struct{}),
+		discovering: make(chan struct{}, 1),
+		resume:      make(chan struct{}),
 	}
 	names := []string{"read"}
 	remote.names.Store(&names)

@@ -6,7 +6,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/client/transport"
+	sdktransport "github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -21,13 +21,13 @@ func TestTypeScriptProtocolFixtureMRTR(t *testing.T) {
 	}
 	rounds := 0
 	fixture := &fixtureTransport{
-		responder: func(_ context.Context, request transport.JSONRPCRequest) (*transport.JSONRPCResponse, error) {
+		responder: func(_ context.Context, request sdktransport.JSONRPCRequest) (*sdktransport.JSONRPCResponse, error) {
 			if request.Method == "server/discover" {
-				return transport.NewJSONRPCResultResponse(request.ID, fixtures["discover"]), nil
+				return sdktransport.NewJSONRPCResultResponse(request.ID, fixtures["discover"]), nil
 			}
 			rounds++
 			if rounds == 1 {
-				return transport.NewJSONRPCResultResponse(request.ID, fixtures["inputRequired"]), nil
+				return sdktransport.NewJSONRPCResultResponse(request.ID, fixtures["inputRequired"]), nil
 			}
 			encoded, _ := json.Marshal(request.Params)
 			var params struct {
@@ -42,7 +42,7 @@ func TestTypeScriptProtocolFixtureMRTR(t *testing.T) {
 				params.InputResponses["urlInput"].Action != "accept" {
 				t.Fatalf("MRTR did not preserve TypeScript wire identities: %s", encoded)
 			}
-			return transport.NewJSONRPCResultResponse(request.ID, fixtures["complete"]), nil
+			return sdktransport.NewJSONRPCResultResponse(request.ID, fixtures["complete"]), nil
 		},
 	}
 	active := startProtocolTestSession(t, fixture, &fixtureElicitor{

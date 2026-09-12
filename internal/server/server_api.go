@@ -10,6 +10,7 @@ import (
 	"github.com/gorenx/goren/apiproxy"
 	commandsadapter "github.com/gorenx/goren/apiproxy/commands/actor"
 	modeladapter "github.com/gorenx/goren/apiproxy/llm/actor"
+	mcpadapter "github.com/gorenx/goren/apiproxy/mcp/actor"
 	sessionapi "github.com/gorenx/goren/apiproxy/session"
 	sessionadapter "github.com/gorenx/goren/apiproxy/session/actor"
 	eventadapter "github.com/gorenx/goren/apiproxy/session/events/actor"
@@ -243,7 +244,7 @@ func (owner *Server) initializeAPI(ctx context.Context, constructors *toolactor.
 	if err != nil {
 		return err
 	}
-	owner.mcpIdentity, err = goakt.GrainOf[*mcpGrain](ctx, system, "mcp.management", goakt.WithLongLivedGrain())
+	mcpDirectory, err := mcpadapter.NewDirectory(system, owner.agents, timeout)
 	if err != nil {
 		return err
 	}
@@ -251,14 +252,25 @@ func (owner *Server) initializeAPI(ctx context.Context, constructors *toolactor.
 	if err != nil {
 		return err
 	}
-	connections := &mcpDirectory{
+	connections := mcpSettings{
 		system:   system,
-		identity: owner.mcpIdentity,
+		registry: tools,
+		timeout:  timeout,
+		reserved: owner.settings.Tools.Clone().MCP,
+	}
+	for _, definition := range owner.settings.MCP {
+		if definition.Transport == "stdio" {
+			connections.local = append(connections.local, definition)
+			connections.reserved = append(connections.reserved, definition)
+		}
+	}
+	if err := connections.ApplyMCP(ctx, owner.settings.userBaseline().MCPConnections()); err != nil {
+		return err
 	}
 	owner.picker = newDirectoryPicker(owner.settings.Address)
 	owner.api, err = apiproxy.NewServer(ctx, apiproxy.Dependencies{
 		DirectoryPicker: owner.picker,
-		MCP:             connections,
+		MCP:             mcpDirectory,
 		Settings:        preferences,
 		Sessions: sessionapi.Dependencies{
 			Storage:     owner.settings.Attachments,

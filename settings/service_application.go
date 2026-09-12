@@ -35,7 +35,7 @@ func (owner *Service) RetryApplication(ctx context.Context, identifier Group, ex
 	case PromptSection:
 		err = owner.prompts.ApplyPrompt(ctx, identifier.Name, owner.target.Prompts[identifier.Name].Prompt())
 	case MCPSection:
-		err = owner.connections.Reconcile(ctx, owner.target.MCPConnections())
+		err = owner.connections.ApplyMCP(ctx, owner.target.MCPConnections())
 	default:
 		return owner.Snapshot(), ErrInvalid
 	}
@@ -47,7 +47,7 @@ func (owner *Service) RetryApplication(ctx context.Context, identifier Group, ex
 		application.Error = ErrApplication.Error()
 		owner.applications[identifier] = application
 	}
-	// MCP reconciliation confirms the complete captured set, including removals.
+	// MCP publication confirms the complete captured configuration, including removals.
 	if identifier.Section == MCPSection {
 		for key, revision := range owner.state.Versions {
 			if key.Section != MCPSection {

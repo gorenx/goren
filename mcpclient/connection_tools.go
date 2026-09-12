@@ -8,6 +8,7 @@ import (
 	"errors"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/tools"
@@ -44,76 +45,6 @@ func ToolName(serverName string, rawName string) string {
 	return clean + "_" + hex.EncodeToString(digest[:8])
 }
 
-// Refresh validates every page before replacing the last complete tool snapshot.
-func (owner *Connection) Refresh(ctx context.Context) error {
-	owner.refresh.Lock()
-	defer owner.refresh.Unlock()
-	work, finish, err := owner.begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer finish()
-	entries := make(map[string]remoteTool)
-	cursors := make(map[string]bool)
-	cursor := ""
-	for page := 0; ; page++ {
-		if page >= owner.settings.MaxPages || cursors[cursor] {
-			return errors.New("mcpclient: tools/list pagination limit or repeated cursor")
-		}
-		cursors[cursor] = true
-		listed, err := owner.session.listToolsPage(work, cursor)
-		if err != nil {
-			return errors.New("mcpclient: tools/list failed")
-		}
-		if listed == nil || listed.Tools == nil {
-			return errors.New("mcpclient: empty tools/list response")
-		}
-		for _, advertised := range listed.Tools {
-			if advertised.Name == "" {
-				return errors.New("mcpclient: empty remote tool name")
-			}
-			name := ToolName(owner.settings.ServerName, advertised.Name)
-			if _, exists := entries[name]; exists {
-				return errors.New("mcpclient: duplicate tool name")
-			}
-			if len(entries) >= owner.settings.MaxTools {
-				return errors.New("mcpclient: tool count exceeds limit")
-			}
-			parameters := advertised.RawInputSchema
-			if parameters == nil {
-				parameters, err = json.Marshal(advertised.InputSchema)
-			}
-			if err != nil {
-				return errors.New("mcpclient: invalid tool input schema")
-			}
-			parameters, err = tools.SnapshotObjectSchema(parameters)
-			if err != nil {
-				return errors.New("mcpclient: unsupported tool input schema")
-			}
-			entries[name] = remoteTool{
-				rawName: advertised.Name,
-				schema: llm.ToolSchema{
-					Name:        name,
-					Description: advertised.Description,
-					Parameters:  parameters,
-				},
-				taskRequired: advertised.Execution != nil && advertised.Execution.TaskSupport == "required",
-			}
-		}
-		cursor = string(listed.NextCursor)
-		if cursor == "" {
-			break
-		}
-	}
-	owner.mutex.Lock()
-	defer owner.mutex.Unlock()
-	if owner.closed || work.Err() != nil {
-		return errors.New("mcpclient: connection ended during discovery")
-	}
-	owner.entries = entries
-	return nil
-}
-
 func schemas(entries map[string]remoteTool) []llm.ToolSchema {
 	result := make([]llm.ToolSchema, 0, len(entries))
 	for _, entry := range entries {
@@ -126,19 +57,61 @@ func schemas(entries map[string]remoteTool) []llm.ToolSchema {
 }
 
 // ProviderID identifies this connection's immutable Provider binding.
-// Catalog refreshes retain it; replacing the Connection changes it.
+// Refresh and Reconnect retain it; a different configured Connection changes it.
 func (owner *Connection) ProviderID() tools.ProviderID { return owner.providerID }
 
 // Provider resolves one explicit public/raw binding without network I/O.
 func (owner *Connection) Provider(name string) (tool.Provider, bool) {
 	owner.mutex.Lock()
 	defer owner.mutex.Unlock()
-	_, present := owner.entries[name]
-	if !present || owner.closed {
+	if owner.closed {
+		return nil, false
+	}
+	_, present := owner.current.tool(name)
+	if !present {
 		return nil, false
 	}
 	return &provider{
 		connection: owner,
 		name:       name,
 	}, true
+}
+
+// openTool captures an executable definition under this Connection's admission policy.
+func (owner *Connection) openTool(ctx context.Context, name string) (tool.Implementation, error) {
+	if ctx == nil {
+		return tool.Implementation{}, errors.New("mcpclient: tool context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return tool.Implementation{}, err
+	}
+	owner.mutex.Lock()
+	peer := owner.current
+	entry, exists := peer.tool(name)
+	closed := owner.closed
+	paused := owner.paused
+	owner.mutex.Unlock()
+	if paused {
+		return tool.Implementation{}, ErrDraining
+	}
+	if !exists || closed {
+		return tool.Implementation{}, errors.New("mcpclient: tool is no longer available")
+	}
+	body := &executor{
+		connection: owner,
+		definition: entry,
+	}
+	return tool.Implementation{
+		Definition: tools.ToolDefinition{
+			Name:        entry.schema.Name,
+			Description: entry.schema.Description,
+			Parameters:  append(json.RawMessage(nil), entry.schema.Parameters...),
+			Executor:    body,
+			Timeout:     time.Duration(owner.settings.ElicitationTimeoutMs) * time.Millisecond,
+			Output: tools.ToolOutputDefinition{
+				Schema:   json.RawMessage(`{"type":"object","properties":{"content":{"type":"array","items":{}},"structuredContent":{}},"required":["content"],"additionalProperties":false}`),
+				Renderer: &renderer{},
+			},
+		},
+	}, nil
 }

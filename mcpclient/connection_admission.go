@@ -5,79 +5,56 @@ import (
 	"errors"
 )
 
-// ErrDraining means configuration replacement has paused new connection operations.
-// The manager must explicitly resume admission or close the connection.
+// ErrDraining means the owner has paused this target for configuration replacement.
 var ErrDraining = errors.New("mcpclient: connection is draining for configuration update")
 
-// Drain pauses admission and waits for admitted operations without canceling them.
-// Cancellation stops only the wait; admission remains paused until Resume or Close.
-// Management callers serialize Drain, Resume and Close; tool calls remain concurrent.
+// Drain pauses new operations and waits for calls already using the target.
+// A canceled wait leaves admission paused until Resume or Close.
 func (owner *Connection) Drain(ctx context.Context) error {
-	if ctx == nil {
-		return errors.New("mcpclient: drain context is required")
-	}
-	if err := ctx.Err(); err != nil {
+	_, finish, err := owner.operation(ctx)
+	if err != nil {
 		return err
 	}
+	defer finish()
 	owner.mutex.Lock()
-	if owner.closed || owner.lifetime.Err() != nil {
-		owner.mutex.Unlock()
-		return errors.New("mcpclient: connection is unavailable")
-	}
 	owner.paused = true
-	idle := owner.idle
+	peer := owner.current
 	owner.mutex.Unlock()
-	if idle == nil {
-		return nil
+	if err := peer.Drain(ctx); err != nil {
+		if owner.lifetime.Err() != nil {
+			return peer.Close(ctx)
+		}
+		return err
 	}
-	select {
-	case <-idle:
-		return ctx.Err()
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	return owner.releaseRetired(ctx, true)
 }
 
-// Resume reopens admission after a replacement was abandoned, without reconnecting.
+// Resume permits operations on the existing healthy transport without reconnecting.
 func (owner *Connection) Resume() error {
 	owner.mutex.Lock()
 	defer owner.mutex.Unlock()
-	if owner.closed || owner.lifetime.Err() != nil {
+	if owner.closed {
 		return errors.New("mcpclient: connection is unavailable")
+	}
+	if err := owner.current.Resume(); err != nil {
+		return err
 	}
 	owner.paused = false
 	return nil
 }
 
-func (owner *Connection) begin(ctx context.Context) (context.Context, func(), error) {
-	if ctx == nil {
-		return nil, nil, errors.New("mcpclient: operation context is required")
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, nil, err
-	}
+// beginTool captures one transport and validates the installed definition before
+// admitting I/O. Reconnect cannot move an already admitted operation to a new peer.
+func (owner *Connection) beginTool(ctx context.Context, expected remoteTool) (*transport, context.Context, func(), error) {
 	owner.mutex.Lock()
 	defer owner.mutex.Unlock()
-	if owner.closed || owner.lifetime.Err() != nil {
-		return nil, nil, errors.New("mcpclient: connection is unavailable")
+	if owner.closed {
+		return nil, nil, nil, errors.New("mcpclient: connection is unavailable")
 	}
 	if owner.paused {
-		return nil, nil, ErrDraining
+		return nil, nil, nil, ErrDraining
 	}
-	work, cancel := context.WithCancel(ctx)
-	stop := context.AfterFunc(owner.lifetime, cancel)
-	if owner.active == 0 {
-		owner.idle = make(chan struct{})
-	}
-	owner.active++
-	return work, func() {
-		stop()
-		cancel()
-		owner.mutex.Lock()
-		owner.active--
-		if owner.active == 0 {
-			close(owner.idle)
-		}
-		owner.mutex.Unlock()
-	}, nil
+	peer := owner.current
+	work, finish, err := peer.beginTool(ctx, expected)
+	return peer, work, finish, err
 }

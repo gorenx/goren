@@ -19,30 +19,31 @@ type caller struct {
 }
 
 type executor struct {
-	connection   *Connection
-	rawName      string
-	taskRequired bool
+	connection *Connection
+	definition remoteTool
 }
 
 func (body *executor) Execute(arguments json.RawMessage, runContext tools.ToolRunContext) (json.RawMessage, error) {
-	if body.taskRequired {
+	if body.definition.taskRequired {
 		return nil, errors.New("mcpclient: this tool requires unsupported task execution")
 	}
 	if runContext.Execution.SessionID == "" || runContext.Execution.CallID == "" {
 		return nil, errors.New("mcpclient: exact calling Agent and Tool call identity are required")
 	}
-	work, finish, err := body.connection.begin(runContext.Context)
+	peer, work, finish, err := body.connection.beginTool(runContext.Context, body.definition)
 	if err != nil {
 		return nil, err
 	}
 	defer finish()
-	work, cancel := context.WithTimeout(work, time.Duration(body.connection.settings.ElicitationTimeoutMs)*time.Millisecond)
+	work, cancel := context.WithTimeout(work,
+		time.Duration(body.connection.settings.ElicitationTimeoutMs)*time.Millisecond,
+	)
 	defer cancel()
 	work = context.WithValue(work, callerKey{}, caller{
 		sessionID: runContext.Execution.SessionID,
 		callID:    runContext.Execution.CallID,
 	})
-	rawResult, err := body.connection.session.callTool(work, body.rawName, arguments)
+	rawResult, err := peer.session.callTool(work, body.definition.rawName, arguments)
 	if work.Err() != nil {
 		return nil, work.Err()
 	}

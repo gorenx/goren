@@ -68,7 +68,7 @@ func (owner *Provider) Target() settings.Directory { return owner.target.Clone()
 func (owner *Provider) Bind(ctx context.Context,
 	running goakt.ActorSystem,
 	prompts settings.PromptUpdater,
-	connections settings.MCPConnections,
+	connections settings.MCPUpdater,
 	toolsets settings.ToolUpdater,
 ) (*Client, error) {
 	if owner.client != nil ||

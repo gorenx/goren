@@ -35,9 +35,9 @@ func (fixture *promptFixture) ApplyPrompt(ctx context.Context, _ string, _ syste
 
 type connectionFixture struct{}
 
-func (*connectionFixture) Validate(context.Context, []mcpclient.Config) error { return nil }
+func (*connectionFixture) ValidateMCP(context.Context, []mcpclient.Config) error { return nil }
 
-func (*connectionFixture) Reconcile(context.Context, []mcpclient.Config) error { return nil }
+func (*connectionFixture) ApplyMCP(context.Context, []mcpclient.Config) error { return nil }
 
 func TestGrainKeepsQueriesResponsiveAndSerializesConditionalEdits(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)

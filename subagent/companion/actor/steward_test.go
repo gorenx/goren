@@ -133,10 +133,10 @@ func (fixture *childFixture) Start(ctx context.Context, parent, child agentregis
 func (*configurationFixture) ApplyPrompt(context.Context, string, systemprompt.Config) error {
 	return errors.New("test: unexpected global prompt update")
 }
-func (*configurationFixture) Validate(context.Context, []mcpclient.Config) error {
+func (*configurationFixture) ValidateMCP(context.Context, []mcpclient.Config) error {
 	return errors.New("test: unexpected global MCP validation")
 }
-func (*configurationFixture) Reconcile(context.Context, []mcpclient.Config) error {
+func (*configurationFixture) ApplyMCP(context.Context, []mcpclient.Config) error {
 	return errors.New("test: unexpected global MCP update")
 }
 func (*configurationFixture) ValidateTool(context.Context, string) error {

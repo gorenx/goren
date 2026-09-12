@@ -76,9 +76,5 @@ func (owner *Server) initializeToolProviders(ctx context.Context, sessions *goak
 	for name, source := range owner.settings.Providers {
 		entries[name] = source
 	}
-	sources, err := owner.initializeMCP(ctx, questions)
-	if err != nil {
-		return err
-	}
-	return constructors.Install(entries, sources...)
+	return constructors.Install(entries)
 }

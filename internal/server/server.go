@@ -56,8 +56,6 @@ type Server struct {
 	carrier     *connection.HTTPHost
 	cancel      context.CancelFunc
 	served      chan error
-	mcp         *mcpManager
-	mcpIdentity *goakt.GrainIdentity
 	preferences *settingsactor.Provider
 	picker      *directoryPicker
 }
@@ -307,9 +305,6 @@ func (owner *Server) closeResources(ctx context.Context) error {
 		}
 		owner.picker = nil
 	}
-	if owner.mcp != nil {
-		owner.mcp.cancel()
-	}
 	if owner.cancel != nil {
 		owner.cancel()
 		select {
@@ -349,12 +344,6 @@ func (owner *Server) closeResources(ctx context.Context) error {
 			return errors.Join(transportFailure, err)
 		}
 		owner.agents = nil
-	}
-	if owner.mcp != nil {
-		if err := owner.mcp.close(ctx); err != nil {
-			return err
-		}
-		owner.mcp = nil
 	}
 	if owner.workspace != nil {
 		err := owner.workspace.Shutdown(ctx)

@@ -70,9 +70,9 @@ func (updater *promptUpdater) ApplyPrompt(context.Context, string, systemprompt.
 
 type connectionUpdater struct{}
 
-func (*connectionUpdater) Validate(context.Context, []mcpclient.Config) error { return nil }
+func (*connectionUpdater) ValidateMCP(context.Context, []mcpclient.Config) error { return nil }
 
-func (*connectionUpdater) Reconcile(context.Context, []mcpclient.Config) error { return nil }
+func (*connectionUpdater) ApplyMCP(context.Context, []mcpclient.Config) error { return nil }
 
 type observedSettings struct {
 	settings.Settings

@@ -30,7 +30,9 @@ type Runtime struct {
 	instances   *Instances
 	// connections owns Session MCP transports; tools borrow them until release.
 	connections *connections
-	active      *operation
+	// retries owns transport recovery without acquiring the tool execution operation.
+	retries map[string]*connectionRetry
+	active  *operation
 	// calls maps a model tool-call ID to its retained business Call and current
 	// cancellation/reply handles. Entries remain until result consumption releases
 	// them; a cancellation request alone does not remove the execution obligation.
@@ -66,6 +68,11 @@ func (owner *Runtime) OnActivate(context.Context, *goakt.GrainProps) error {
 
 // OnDeactivate cancels work without certifying that external resources were released.
 func (owner *Runtime) OnDeactivate(context.Context, *goakt.GrainProps) error {
+	for _, request := range owner.retries {
+		request.cancel()
+		request.reply.Response(Completion{Err: errors.New("tools: Runtime stopped before connection recovery completed")})
+	}
+	owner.retries = nil
 	for _, instance := range owner.tools {
 		if instance.active != nil {
 			pending := instance.active
@@ -95,7 +102,7 @@ func (owner *Runtime) OnDeactivate(context.Context, *goakt.GrainProps) error {
 
 // OnReceive serializes protocol handling; framework tasks exclusively run the business owner.
 func (owner *Runtime) OnReceive(gc *goakt.GrainContext) {
-	if owner.receiveTools(gc) || owner.receiveCalls(gc) || owner.receiveConfiguration(gc) {
+	if owner.receiveTools(gc) || owner.receiveCalls(gc) || owner.receiveConfiguration(gc) || owner.receiveConnections(gc) {
 		return
 	}
 	switch input := gc.Message().(type) {
@@ -202,6 +209,11 @@ func (owner *Runtime) OnReceive(gc *goakt.GrainContext) {
 			owner.creationID != input.CreationID {
 			gc.Response(Completion{Err: errors.New("tools: close does not own this runtime activation")})
 			return
+		}
+		if len(owner.retries) != 0 {
+			for _, request := range owner.retries {
+				request.cancel()
+			}
 		}
 		if owner.active != nil {
 			gc.Response(Completion{Err: errors.New("tools: runtime operation is still running")})

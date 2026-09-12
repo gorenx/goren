@@ -57,11 +57,11 @@ type connectionRecorder struct {
 	invalid     error
 }
 
-func (recorder *connectionRecorder) Validate(context.Context, []mcpclient.Config) error {
+func (recorder *connectionRecorder) ValidateMCP(context.Context, []mcpclient.Config) error {
 	return recorder.invalid
 }
 
-func (recorder *connectionRecorder) Reconcile(_ context.Context, definitions []mcpclient.Config) error {
+func (recorder *connectionRecorder) ApplyMCP(_ context.Context, definitions []mcpclient.Config) error {
 	recorder.calls++
 	recorder.definitions = definitions
 	return nil

@@ -58,7 +58,7 @@ export function App(): React.JSX.Element {
     {credentialsOpen && <CredentialDialog store={store} snapshot={snapshot} onClose={closeCredentials} />}
     {boundDefinitionsOpen && <BoundDefinitionDialog store={store} snapshot={snapshot} onClose={() => setBoundDefinitionsOpen(false)} />}
     {settingsOpen && <SettingsDialog onClose={() => { setSettingsOpen(false); void store.refreshCredential().catch(() => { /* The store reports the failure. */ }) }} onCredentialChanged={() => store.refreshCredential()} />}
-    {mcpOpen && <MCPDialog onClose={() => setMCPOpen(false)} />}
+    {mcpOpen && <MCPDialog key={snapshot.currentSessionId} sessionId={snapshot.currentSessionId} onClose={() => setMCPOpen(false)} onOpenSettings={() => { setMCPOpen(false); setSettingsOpen(true) }} />}
       {snapshot.error !== undefined && (
         <div className="toast" role="alert">
           <span className="min-w-0 flex-1">{snapshot.error}</span>

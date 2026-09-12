@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/client/transport"
+	sdktransport "github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -19,15 +19,15 @@ func TestRefreshRetainsCompleteCatalogOnInvalidPages(t *testing.T) {
 		t.Run(invalid, func(t *testing.T) {
 			response := `{"resultType":"complete","tools":[{"name":"original","inputSchema":{"type":"object"}}]}`
 			fixture := &fixtureTransport{
-				responder: func(_ context.Context, request transport.JSONRPCRequest) (*transport.JSONRPCResponse, error) {
+				responder: func(_ context.Context, request sdktransport.JSONRPCRequest) (*sdktransport.JSONRPCResponse, error) {
 					if request.Method == "server/discover" {
 						return discoverResponse(request.ID), nil
 					}
-					return transport.NewJSONRPCResultResponse(request.ID, json.RawMessage(response)), nil
+					return sdktransport.NewJSONRPCResultResponse(request.ID, json.RawMessage(response)), nil
 				},
 			}
 			active := startProtocolTestSession(t, fixture, nil)
-			owner := &Connection{
+			owner := &transport{
 				session:  active,
 				lifetime: t.Context(),
 				settings: Config{
@@ -52,11 +52,11 @@ func TestRefreshRetainsCompleteCatalogOnInvalidPages(t *testing.T) {
 
 func TestProtocolDiscoveryRejectsIncompatibleSuccess(t *testing.T) {
 	fixture := &fixtureTransport{
-		responder: func(_ context.Context, request transport.JSONRPCRequest) (*transport.JSONRPCResponse, error) {
+		responder: func(_ context.Context, request sdktransport.JSONRPCRequest) (*sdktransport.JSONRPCResponse, error) {
 			if request.Method != "server/discover" {
 				t.Fatalf("legacy request reached wire: %s", request.Method)
 			}
-			return transport.NewJSONRPCResultResponse(mcp.NewRequestId(1), json.RawMessage(`{"resultType":"complete","supportedVersions":["2025-11-25"],"capabilities":{}}`)), nil
+			return sdktransport.NewJSONRPCResultResponse(mcp.NewRequestId(1), json.RawMessage(`{"resultType":"complete","supportedVersions":["2025-11-25"],"capabilities":{}}`)), nil
 		},
 	}
 	active, err := newProtocolSession(fixture, protocolTestSettings(nil))

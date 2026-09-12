@@ -29,7 +29,7 @@ func (owner *Runtime) receiveConfiguration(gc *goakt.GrainContext) bool {
 		if owner.connections.changed() {
 			owner.changed = true
 		}
-		if !owner.changed {
+		if !owner.changed || len(owner.retries) != 0 {
 			definitions, err := owner.toolRuntime.Definitions()
 			gc.Response(Definitions{
 				Value: definitions,
