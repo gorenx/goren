@@ -176,35 +176,13 @@ func (owner *Creator) inheritTools(
 	}
 	static := make(map[string]struct{}, len(source.Global.Schemas)+len(source.Custom.Schemas))
 	for _, schema := range append(source.Global.Schemas, source.Custom.Schemas...) {
-		if !selectedByParent(schema.Name, source.Custom.Restriction) {
-			continue
-		}
 		static[schema.Name] = struct{}{}
-		if _, duplicate := resolved.Tools[schema.Name]; duplicate || schema.Name == report.Schema().Name {
-			return fmt.Errorf("%w: duplicate inherited tool %q", companions.ErrInvalid, schema.Name)
-		}
-		enabled, visible := true, true
-		for _, policy := range []toolregistry.Policy{source.Global.Policies[schema.Name], source.Custom.Policies[schema.Name]} {
-			if policy.Enabled != nil {
-				enabled = *policy.Enabled
-			}
-			if policy.Visible != nil {
-				visible = *policy.Visible
-			}
-		}
-		resolved.Tools[schema.Name] = tools.Config{
-			Enabled: &enabled,
-			Visible: &visible,
-		}
 	}
 	for _, name := range current.Snapshot.Names {
-		if _, found := static[name]; found {
-			continue
-		}
-		if !strings.HasPrefix(name, "mcp_") || !inheritMCP {
+		if _, found := static[name]; !found && (!strings.HasPrefix(name, "mcp_") || !inheritMCP) {
 			return fmt.Errorf("%w: tool %q requires an explicit connection", companions.ErrInvalid, name)
 		}
-		if _, duplicate := resolved.Tools[name]; duplicate {
+		if _, duplicate := resolved.Tools[name]; duplicate || name == report.Schema().Name {
 			return fmt.Errorf("%w: duplicate inherited tool %q", companions.ErrInvalid, name)
 		}
 		visible := slices.ContainsFunc(current.Snapshot.Schemas, func(entry llm.ToolSchema) bool { return entry.Name == name })
@@ -215,16 +193,6 @@ func (owner *Creator) inheritTools(
 		}
 	}
 	return nil
-}
-
-func selectedByParent(name string, restriction *toolregistry.ToolRestriction) bool {
-	if restriction == nil {
-		return true
-	}
-	if restriction.Allow != nil && !slices.Contains(restriction.Allow, name) {
-		return false
-	}
-	return !slices.Contains(restriction.Deny, name)
 }
 
 func boolPointer(value *bool) *bool {

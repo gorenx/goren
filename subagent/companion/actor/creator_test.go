@@ -370,4 +370,28 @@ func TestCreatorInheritsCurrentParentConfigurationForDefaultCompanion(t *testing
 	}); err == nil {
 		t.Fatal("dedicated tool duplicated an inherited name")
 	}
+	pending := fixture.input.Tools.Clone()
+	pending.Schemas = append(pending.Schemas, llm.ToolSchema{
+		Name:       "pending",
+		Parameters: json.RawMessage(`{"type":"object"}`),
+	})
+	pending.Policies = map[string]toolregistry.Policy{
+		"send_message": {
+			Visible: new(false),
+		},
+	}
+	configured := request[catalogactor.Completion](t, fixture.system, fixture.input.ToolsRegistry, catalogactor.ConfigureSession{
+		SessionID: parentInput.Creation.AgentID,
+		Catalog:   pending,
+	})
+	if configured.Err != nil {
+		t.Fatal(configured.Err)
+	}
+	adopted, err := starter.Resolve(t.Context(), parentInput.Creation, policy, settings.Values{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found := adopted.Tools["pending"]; found || adopted.Tools["send_message"].Visible == nil || !*adopted.Tools["send_message"].Visible {
+		t.Fatalf("inheritance copied unapplied Registry input instead of the parent Runtime: %+v", adopted.Tools)
+	}
 }
