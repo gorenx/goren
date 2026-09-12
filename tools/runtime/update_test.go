@@ -7,16 +7,11 @@ import (
 	"testing"
 
 	"github.com/gorenx/goren/llm"
-	"github.com/gorenx/goren/session"
 	toolregistry "github.com/gorenx/goren/tools/registry"
 	"github.com/gorenx/goren/tools/tool"
 )
 
 type directory struct{ registry toolregistry.Registry }
-
-func (source *directory) Read(_ context.Context, identifier session.SessionID) (toolregistry.Configuration, error) {
-	return source.registry.Read(identifier), nil
-}
 
 type work struct {
 	// events records completed/attempted work operations in their observed order.
@@ -61,7 +56,7 @@ func initializedRuntime(t *testing.T) (*Runtime, *directory, *work) {
 		t.Fatal(err)
 	}
 	endpoint := &work{}
-	err = owner.Initialize(context.Background(), source, endpoint)
+	err = owner.Initialize(context.Background(), source.registry.Read("agent"), endpoint)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +73,7 @@ func TestRuntimeSwitchesCompleteWorkBeforeExposingDefinitions(t *testing.T) {
 		t.Fatal(err)
 	}
 	endpoint.failure = "commit:read"
-	complete, err := owner.Apply(context.Background(), source, endpoint)
+	complete, err := owner.Apply(context.Background(), source.registry.Read("agent"), endpoint)
 	if complete || err == nil {
 		t.Fatal("partial switch was reported complete")
 	}
@@ -87,7 +82,7 @@ func TestRuntimeSwitchesCompleteWorkBeforeExposingDefinitions(t *testing.T) {
 		t.Fatal("partial switch exposed a snapshot")
 	}
 	endpoint.failure = ""
-	complete, err = owner.Apply(context.Background(), source, endpoint)
+	complete, err = owner.Apply(context.Background(), source.registry.Read("agent"), endpoint)
 	if !complete || err != nil {
 		t.Fatalf("retry=%v error=%v", complete, err)
 	}
@@ -110,7 +105,7 @@ func TestRuntimeRollsBackEveryAttemptAndPreservesOriginalWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	endpoint.failure = "prepare:read"
-	complete, err := owner.Apply(context.Background(), source, endpoint)
+	complete, err := owner.Apply(context.Background(), source.registry.Read("agent"), endpoint)
 	if !complete || err == nil {
 		t.Fatal("failed preparation did not finish rollback")
 	}
@@ -121,6 +116,49 @@ func TestRuntimeRollsBackEveryAttemptAndPreservesOriginalWork(t *testing.T) {
 	snapshot, err := owner.Snapshot()
 	if err != nil || !slices.Equal(snapshot.Names, []string{"read", "removed"}) {
 		t.Fatal("rollback replaced original membership")
+	}
+	if !slices.ContainsFunc(snapshot.Configuration.Global.Schemas, func(entry llm.ToolSchema) bool {
+		return entry.Name == "removed"
+	}) {
+		t.Fatal("rollback replaced the last applied configuration")
+	}
+}
+
+func TestRuntimeSnapshotRetainsAppliedDisabledTools(t *testing.T) {
+	owner, source, endpoint := initializedRuntime(t)
+	accepted := toolregistry.Catalog{
+		Schemas: []llm.ToolSchema{
+			testSchema("read"),
+			testSchema("removed"),
+			testSchema("disabled"),
+		},
+		Policies: map[string]toolregistry.Policy{
+			"disabled": {
+				Enabled: new(false),
+			},
+		},
+	}
+	if err := source.registry.RegisterSource("local", accepted); err != nil {
+		t.Fatal(err)
+	}
+	if complete, err := owner.Apply(t.Context(), source.registry.Read("agent"), endpoint); !complete || err != nil {
+		t.Fatalf("apply: complete=%v error=%v", complete, err)
+	}
+	accepted.Schemas = append(accepted.Schemas, testSchema("pending"))
+	if err := source.registry.RegisterSource("local", accepted); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := owner.Snapshot()
+	if err != nil || !slices.Equal(snapshot.Names, []string{"read", "removed"}) {
+		t.Fatalf("effective membership: %+v error=%v", snapshot, err)
+	}
+	if len(snapshot.Configuration.Global.Schemas) != 3 || snapshot.Configuration.Global.Policies["disabled"].Enabled == nil || *snapshot.Configuration.Global.Policies["disabled"].Enabled {
+		t.Fatalf("applied disabled tool was lost or pending input leaked: %+v", snapshot.Configuration)
+	}
+	*snapshot.Configuration.Global.Policies["disabled"].Enabled = true
+	again, err := owner.Snapshot()
+	if err != nil || *again.Configuration.Global.Policies["disabled"].Enabled {
+		t.Fatal("caller mutated the Runtime's applied configuration")
 	}
 }
 
@@ -154,7 +192,7 @@ func TestRuntimeRecoveryAppliesCurrentConfiguration(t *testing.T) {
 				t.Fatal(err)
 			}
 			endpoint.failure = "retire:read"
-			if complete, err := owner.Apply(t.Context(), source, endpoint); complete || err == nil {
+			if complete, err := owner.Apply(t.Context(), source.registry.Read("agent"), endpoint); complete || err == nil {
 				t.Fatal("retirement failure was reported complete")
 			}
 			if err := source.registry.RegisterSource("local", toolregistry.Catalog{
@@ -164,7 +202,7 @@ func TestRuntimeRecoveryAppliesCurrentConfiguration(t *testing.T) {
 			}
 			endpoint.failure = ""
 			endpoint.events = nil
-			if complete, err := owner.Apply(t.Context(), source, endpoint); !complete || err != nil {
+			if complete, err := owner.Apply(t.Context(), source.registry.Read("agent"), endpoint); !complete || err != nil {
 				t.Fatalf("recovery: complete=%v error=%v", complete, err)
 			}
 			captured, err := owner.Definitions()

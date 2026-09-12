@@ -5,11 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 
 	"github.com/gorenx/goren/agent"
 	agentregistry "github.com/gorenx/goren/agent/registry"
-	"github.com/gorenx/goren/llm"
 	llmactor "github.com/gorenx/goren/llm/actor"
 	"github.com/gorenx/goren/settings"
 	companions "github.com/gorenx/goren/subagent/companion"
@@ -17,7 +15,6 @@ import (
 	promptactor "github.com/gorenx/goren/systemprompt/actor"
 	"github.com/gorenx/goren/tools"
 	toolregistry "github.com/gorenx/goren/tools/registry"
-	catalogactor "github.com/gorenx/goren/tools/registry/actor"
 	runtimeactor "github.com/gorenx/goren/tools/runtime/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
@@ -111,17 +108,30 @@ func (owner *Creator) Resolve(
 		}
 	}
 	if policy.Inherit.Tools == companions.InheritAllTools || policy.Inherit.MCP {
-		catalog, failure := ask[catalogactor.Configuration](ctx, owner.System, owner.Tools, catalogactor.ReadConfiguration{
-			SessionID: parent.AgentID,
+		target, failure := goakt.GrainOf[*runtimeactor.Runtime](
+			ctx,
+			owner.System,
+			runtimeactor.RuntimeName(string(parent.AgentID)),
+			goakt.WithLongLivedGrain(),
+		)
+		if failure != nil {
+			return settings.Values{}, failure
+		}
+		current, failure := ask[runtimeactor.RuntimeView](ctx, owner.System, target, runtimeactor.ReadRuntime{
+			CreationID: parent.CreationID,
 		})
 		if failure != nil {
 			return settings.Values{}, failure
 		}
+		if current.Err != nil {
+			return settings.Values{}, current.Err
+		}
+		catalog := current.Snapshot.Configuration
 		if policy.Inherit.MCP {
 			if resolved.MCP == nil {
 				resolved.MCP = make(map[string]settings.MCPConfig)
 			}
-			for _, connection := range append(catalog.Value.Global.MCP, catalog.Value.Custom.MCP...) {
+			for _, connection := range append(catalog.Global.MCP, catalog.Custom.MCP...) {
 				if _, exists := resolved.MCP[connection.ServerName]; exists {
 					return settings.Values{}, fmt.Errorf("%w: duplicate MCP connection %q", companions.ErrInvalid, connection.ServerName)
 				}
@@ -132,7 +142,7 @@ func (owner *Creator) Resolve(
 			}
 		}
 		if policy.Inherit.Tools == companions.InheritAllTools {
-			if failure := owner.inheritTools(ctx, parent, catalog.Value, &resolved, policy.Inherit.MCP); failure != nil {
+			if failure := inheritTools(catalog, &resolved); failure != nil {
 				return settings.Values{}, failure
 			}
 		}
@@ -149,50 +159,48 @@ func (owner *Creator) Resolve(
 	return resolved, resolved.Validate()
 }
 
-func (owner *Creator) inheritTools(
-	ctx context.Context,
-	parent agentregistry.Creation,
+func inheritTools(
 	source toolregistry.Configuration,
 	resolved *settings.Values,
-	inheritMCP bool,
 ) error {
-	target, err := goakt.GrainOf[*runtimeactor.Runtime](
-		ctx,
-		owner.System,
-		runtimeactor.RuntimeName(string(parent.AgentID)),
-		goakt.WithLongLivedGrain(),
-	)
-	if err != nil {
-		return err
-	}
-	current, err := ask[runtimeactor.RuntimeView](ctx, owner.System, target, runtimeactor.ReadRuntime{
-		CreationID: parent.CreationID,
-	})
-	if err != nil || current.Err != nil {
-		return errors.Join(err, current.Err)
-	}
 	if resolved.Tools == nil {
 		resolved.Tools = make(map[string]tools.Config)
 	}
-	static := make(map[string]struct{}, len(source.Global.Schemas)+len(source.Custom.Schemas))
 	for _, schema := range append(source.Global.Schemas, source.Custom.Schemas...) {
-		static[schema.Name] = struct{}{}
-	}
-	for _, name := range current.Snapshot.Names {
-		if _, found := static[name]; !found && (!strings.HasPrefix(name, "mcp_") || !inheritMCP) {
-			return fmt.Errorf("%w: tool %q requires an explicit connection", companions.ErrInvalid, name)
+		if !selectedByParent(schema.Name, source.Custom.Restriction) {
+			continue
 		}
-		if _, duplicate := resolved.Tools[name]; duplicate || name == report.Schema().Name {
-			return fmt.Errorf("%w: duplicate inherited tool %q", companions.ErrInvalid, name)
+		if _, duplicate := resolved.Tools[schema.Name]; duplicate || schema.Name == report.Schema().Name {
+			return fmt.Errorf("%w: duplicate inherited tool %q", companions.ErrInvalid, schema.Name)
 		}
-		visible := slices.ContainsFunc(current.Snapshot.Schemas, func(entry llm.ToolSchema) bool { return entry.Name == name })
-		enabled := true
-		resolved.Tools[name] = tools.Config{
+		enabled, visible := true, true
+		for _, policy := range []toolregistry.Policy{
+			source.Global.Policies[schema.Name],
+			source.Custom.Policies[schema.Name],
+		} {
+			if policy.Enabled != nil {
+				enabled = *policy.Enabled
+			}
+			if policy.Visible != nil {
+				visible = *policy.Visible
+			}
+		}
+		resolved.Tools[schema.Name] = tools.Config{
 			Enabled: &enabled,
 			Visible: &visible,
 		}
 	}
 	return nil
+}
+
+func selectedByParent(name string, restriction *toolregistry.ToolRestriction) bool {
+	if restriction == nil {
+		return true
+	}
+	if restriction.Allow != nil && !slices.Contains(restriction.Allow, name) {
+		return false
+	}
+	return !slices.Contains(restriction.Deny, name)
 }
 
 func boolPointer(value *bool) *bool {

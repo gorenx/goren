@@ -315,8 +315,20 @@ func TestCreatorInheritsCurrentParentConfigurationForDefaultCompanion(t *testing
 		URL:        server.URL,
 	}
 	fixture.input.Tools = &toolregistry.Catalog{
-		Schemas: []llm.ToolSchema{control.MessageSchema(), control.ListSchema()},
-		MCP:     []mcpclient.Config{connection},
+		Schemas: []llm.ToolSchema{
+			control.MessageSchema(),
+			control.ListSchema(),
+			{
+				Name:       "disabled",
+				Parameters: json.RawMessage(`{"type":"object"}`),
+			},
+		},
+		MCP: []mcpclient.Config{connection},
+		Policies: map[string]toolregistry.Policy{
+			"disabled": {
+				Enabled: new(false),
+			},
+		},
 	}
 	fixture.input.Prompt = &systemprompt.Config{
 		Persona: "parent persona",
@@ -355,21 +367,45 @@ func TestCreatorInheritsCurrentParentConfigurationForDefaultCompanion(t *testing
 	saved := view.Target.Agents[child.Companion.Configuration]
 	if saved.Model.Provider != "shared" || saved.Model.Model != "parent-default" ||
 		saved.Prompts["default"].Persona == nil || *saved.Prompts["default"].Persona != "parent persona" ||
-		len(saved.MCP) != 1 || saved.MCP["docs"].Connection.URL != server.URL || len(saved.Tools) != 3 ||
+		len(saved.MCP) != 1 || saved.MCP["docs"].Connection.URL != server.URL || len(saved.Tools) != 4 ||
 		saved.Tools["send_message"].Enabled == nil || !*saved.Tools["send_message"].Enabled ||
+		saved.Tools["disabled"].Enabled == nil || *saved.Tools["disabled"].Enabled ||
 		saved.Tools["mcp_docs_read"].Visible == nil || !*saved.Tools["mcp_docs_read"].Visible {
 		t.Fatalf("explicit inheritance did not freeze adopted values: %+v", saved)
 	}
 	if remote.opens.Load() != 2 {
 		t.Fatal("parent and child did not acquire independent Session connections")
 	}
-	if _, err := starter.Resolve(t.Context(), parentInput.Creation, policy, settings.Values{
-		Tools: map[string]tools.Config{
-			"send_message": {},
-		},
-	}); err == nil {
-		t.Fatal("dedicated tool duplicated an inherited name")
+	for _, name := range []string{"send_message", "disabled"} {
+		if _, err := starter.Resolve(t.Context(), parentInput.Creation, policy, settings.Values{
+			Tools: map[string]tools.Config{
+				name: {},
+			},
+		}); err == nil {
+			t.Fatalf("dedicated tool duplicated inherited name %q", name)
+		}
 	}
+	dedicated := policy.Clone()
+	dedicated.Inherit.MCP = false
+	resolved, err := starter.Resolve(t.Context(), parentInput.Creation, dedicated, settings.Values{
+		MCP: map[string]settings.MCPConfig{
+			"docs": {
+				Enabled:    true,
+				Connection: connection,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sender.Create(t.Context(), Create{
+		Name:    "dedicated-mcp",
+		Enabled: true,
+		Initial: resolved,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	awaitPhase(t, sender, "dedicated-mcp", Ready)
 	pending := fixture.input.Tools.Clone()
 	pending.Schemas = append(pending.Schemas, llm.ToolSchema{
 		Name:       "pending",

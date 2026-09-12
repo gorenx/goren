@@ -13,10 +13,9 @@ import (
 
 // Catalog reads unmerged Registry configuration from a framework task.
 type Catalog struct {
-	system      goakt.ActorSystem
-	target      *goakt.GrainIdentity
-	timeout     time.Duration
-	connections *connections
+	system  goakt.ActorSystem
+	target  *goakt.GrainIdentity
+	timeout time.Duration
 }
 
 // NewCatalog binds an existing Schema Registry without starting Actors.
@@ -31,21 +30,11 @@ func NewCatalog(system goakt.ActorSystem, target *goakt.GrainIdentity, timeout t
 	}, nil
 }
 
-// Read includes this Runtime's discovered tools; business Runtime applies policy.
+// Read returns the Session Registry configuration before MCP discovery.
 func (endpoint *Catalog) Read(ctx context.Context, identifier session.SessionID) (toolregistry.Configuration, error) {
-	selection, err := endpoint.configuration(ctx, identifier)
-	if err != nil {
-		return toolregistry.Configuration{}, err
-	}
-	if endpoint.connections != nil {
-		selection.Global, err = endpoint.connections.catalog(selection.Global)
-	}
-	return selection, err
-}
-
-func (endpoint *Catalog) configuration(ctx context.Context, identifier session.SessionID) (toolregistry.Configuration, error) {
 	payload, err := endpoint.system.AskGrain(
-		ctx, endpoint.target,
+		ctx,
+		endpoint.target,
 		catalogactor.ReadConfiguration{SessionID: identifier},
 		endpoint.timeout,
 	)

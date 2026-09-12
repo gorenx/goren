@@ -15,15 +15,13 @@ import (
 	toolregistry "github.com/gorenx/goren/tools/registry"
 )
 
-// Directory provides Registry facts; it owns no execution or publication transaction.
-type Directory interface {
-	Read(context.Context, session.SessionID) (toolregistry.Configuration, error)
-}
-
 // Snapshot is the effective membership and policy after work has successfully switched.
 type Snapshot struct {
 	Names   []string
 	Schemas []llm.ToolSchema
+	// Configuration is the complete Registry input used by the last successful
+	// switch, including disabled tools absent from executable membership.
+	Configuration toolregistry.Configuration
 	// ProviderIDs records the implementation bindings still used by applied tools.
 	ProviderIDs map[string]tools.ProviderID
 	// Policies maps effective tool names to merged execution collaborators for this snapshot.
@@ -42,6 +40,10 @@ type Runtime struct {
 	// schema, including Version. It retains history across disabling/removal;
 	// membership and current visibility belong to current, not this map.
 	versions map[string]llm.ToolSchema
+	// configuration includes disabled tools; pendingConfiguration is installed
+	// only after the corresponding work replacement succeeds.
+	configuration        toolregistry.Configuration
+	pendingConfiguration *toolregistry.Configuration
 }
 
 // NewRuntime reserves an unconfigured business owner without starting work.
@@ -53,22 +55,22 @@ func NewRuntime(identifier session.SessionID) (*Runtime, error) {
 }
 
 // Initialize applies inherited Registry input before exposing a tool snapshot.
-func (owner *Runtime) Initialize(ctx context.Context, directory Directory, instances Instances) error {
+func (owner *Runtime) Initialize(ctx context.Context, input toolregistry.Configuration, instances Instances) error {
 	if owner.ready || owner.pending != nil || owner.closing {
 		return errors.New("tools: initialization was already attempted")
 	}
-	complete, err := owner.Apply(ctx, directory, instances)
+	complete, err := owner.Apply(ctx, input, instances)
 	if !complete && err == nil {
 		return errors.New("tools: initialization is incomplete")
 	}
 	return err
 }
 
-// Apply finishes any pending replacement before reading and applying current Registry facts.
+// Apply finishes any pending replacement before applying the supplied configuration.
 // Callers must hold the Agent execution boundary until complete is true.
-func (owner *Runtime) Apply(ctx context.Context, directory Directory, instances Instances) (bool, error) {
-	if ctx == nil || directory == nil || instances == nil {
-		return false, errors.New("tools: update context and ports are required")
+func (owner *Runtime) Apply(ctx context.Context, input toolregistry.Configuration, instances Instances) (bool, error) {
+	if ctx == nil || instances == nil {
+		return false, errors.New("tools: update context and instances are required")
 	}
 	if owner.closing {
 		return false, errors.New("tools: runtime is closing")
@@ -78,10 +80,6 @@ func (owner *Runtime) Apply(ctx context.Context, directory Directory, instances 
 		if !complete || err != nil {
 			return complete, err
 		}
-	}
-	input, err := directory.Read(ctx, owner.agentID)
-	if err != nil {
-		return false, err
 	}
 	entries, err := Merge(input)
 	if err != nil {
@@ -96,8 +94,11 @@ func (owner *Runtime) Apply(ctx context.Context, directory Directory, instances 
 		return false, err
 	}
 	if owner.ready && sameTools(entries, owner.current) {
+		owner.configuration = cloneConfiguration(input)
 		return true, nil
 	}
+	captured := cloneConfiguration(input)
+	owner.pendingConfiguration = &captured
 	owner.pending = NewUpdate(entries, previous)
 	return owner.applyUpdate(ctx, instances)
 }
@@ -110,6 +111,7 @@ func (owner *Runtime) applyUpdate(ctx context.Context, instances Instances) (boo
 	}
 	if err == nil {
 		owner.current = cloneTools(owner.pending.tools)
+		owner.configuration = cloneConfiguration(*owner.pendingConfiguration)
 		owner.ready = true
 		if owner.versions == nil {
 			owner.versions = make(map[string]llm.ToolSchema)
@@ -118,6 +120,7 @@ func (owner *Runtime) applyUpdate(ctx context.Context, instances Instances) (boo
 			owner.versions[entry.Schema.Name] = entry.Schema
 		}
 	}
+	owner.pendingConfiguration = nil
 	owner.pending = nil
 	return true, err
 }
@@ -128,8 +131,9 @@ func (owner *Runtime) Snapshot() (Snapshot, error) {
 		return Snapshot{}, errors.New("tools: effective tool configuration is unavailable")
 	}
 	captured := Snapshot{
-		Policies:    make(map[string]execution.Policies),
-		ProviderIDs: make(map[string]tools.ProviderID),
+		Configuration: cloneConfiguration(owner.configuration),
+		Policies:      make(map[string]execution.Policies),
+		ProviderIDs:   make(map[string]tools.ProviderID),
 	}
 	for _, entry := range owner.current {
 		captured.Names = append(captured.Names, entry.Schema.Name)
@@ -146,6 +150,13 @@ func (owner *Runtime) Snapshot() (Snapshot, error) {
 		}
 	}
 	return captured, nil
+}
+
+func cloneConfiguration(input toolregistry.Configuration) toolregistry.Configuration {
+	return toolregistry.Configuration{
+		Global: input.Global.Clone(),
+		Custom: input.Custom.Clone(),
+	}
 }
 
 // Definitions returns only the effective model-facing view, with hidden names retained.

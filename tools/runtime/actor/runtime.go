@@ -150,7 +150,6 @@ func (owner *Runtime) OnReceive(gc *goakt.GrainContext) {
 			peers.questions = source.questions
 		}
 		owner.connections = peers
-		directory.connections = peers
 		// The first Turn rechecks facts changed before subscription became active.
 		owner.changed = true
 		owner.schedule(
@@ -162,7 +161,7 @@ func (owner *Runtime) OnReceive(gc *goakt.GrainContext) {
 						return err
 					}
 				}
-				configuration, err := directory.configuration(ctx, settings.AgentID)
+				configuration, err := directory.Read(ctx, settings.AgentID)
 				if err != nil {
 					return err
 				}
@@ -170,7 +169,11 @@ func (owner *Runtime) OnReceive(gc *goakt.GrainContext) {
 				if err := peers.reconcile(ctx, definitions); err != nil {
 					return err
 				}
-				return business.Initialize(ctx, directory, instances)
+				configuration.Global, err = peers.catalog(configuration.Global)
+				if err != nil {
+					return err
+				}
+				return business.Initialize(ctx, configuration, instances)
 			},
 		)
 	case completed:

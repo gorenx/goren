@@ -54,7 +54,7 @@ func (owner *Runtime) receiveConfiguration(gc *goakt.GrainContext) bool {
 		peers := owner.connections
 		agentID := owner.agentID
 		owner.schedule(gc, current, func(ctx context.Context) error {
-			configuration, err := directory.configuration(ctx, agentID)
+			configuration, err := directory.Read(ctx, agentID)
 			if err != nil {
 				return err
 			}
@@ -65,7 +65,11 @@ func (owner *Runtime) receiveConfiguration(gc *goakt.GrainContext) bool {
 			if err := peers.refresh(ctx); err != nil {
 				return err
 			}
-			if _, err := business.Apply(ctx, directory, instances); err != nil {
+			configuration.Global, err = peers.catalog(configuration.Global)
+			if err != nil {
+				return err
+			}
+			if _, err := business.Apply(ctx, configuration, instances); err != nil {
 				return err
 			}
 			applied, err := business.Snapshot()

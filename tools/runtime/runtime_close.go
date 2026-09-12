@@ -25,6 +25,7 @@ func (owner *Runtime) Close(ctx context.Context, instances Instances) error {
 		if err == nil {
 			owner.current = cloneTools(owner.pending.tools)
 		}
+		owner.pendingConfiguration = nil
 		owner.pending = nil
 	}
 	for len(owner.current) != 0 {

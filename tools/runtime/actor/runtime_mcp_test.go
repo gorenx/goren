@@ -330,6 +330,40 @@ func TestRuntimeMCPReplacesConfigurationAfterCallsFinish(t *testing.T) {
 	}
 }
 
+func TestRuntimeMCPInitializationUsesOneConfiguration(t *testing.T) {
+	remote, definition := serveMCP(t, "initial configuration")
+	remote.pauseDiscovery.Store(true)
+	system, registry, catalog := startCatalog(t, true, nil)
+	sender, _ := newMCPRuntime(t, system, registry, "agent", &toolregistry.Catalog{}, []mcpclient.Config{definition})
+	started := make(chan error, 1)
+	go func() { started <- startClient(t, system, sender, t.Context()) }()
+	select {
+	case <-remote.discovering:
+	case <-time.After(5 * time.Second):
+		t.Fatal("MCP discovery did not start")
+	}
+	if err := catalog.ConfigureSession(t.Context(), "agent", toolregistry.Catalog{}); err != nil {
+		t.Fatal(err)
+	}
+	close(remote.resume)
+	if err := <-started; err != nil {
+		t.Fatal(err)
+	}
+	current := ask[runtimeactor.RuntimeView](t, system, sender.Runtime(), runtimeactor.ReadRuntime{
+		CreationID: "creation",
+	})
+	if current.Err != nil || len(current.Snapshot.Configuration.Global.MCP) != 1 || !slices.Contains(current.Snapshot.Names, mcpclient.ToolName("fixture", "read")) {
+		t.Fatalf("initialization mixed Registry revisions: %+v", current)
+	}
+	updated := ask[runtimeactor.Definitions](t, system, sender.Runtime(), runtimeactor.RefreshConfiguration{
+		CreationID: "creation",
+		ID:         uuid.NewString(),
+	})
+	if updated.Err != nil || len(updated.Value.KnownNames) != 0 {
+		t.Fatalf("next configuration did not apply independently: %+v", updated)
+	}
+}
+
 func awaitMCPClosed(t *testing.T, remote *mcpServer) {
 	t.Helper()
 	deadline := time.NewTimer(time.Second)
