@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/mcpclient"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/tools"
 )
@@ -37,6 +38,9 @@ type Catalog struct {
 	// leave this false because they do not inherit other sources.
 	InheritGlobal bool
 	Schemas       []llm.ToolSchema
+	// MCP contains connection definitions. Each Runtime opens its own connections;
+	// Registry never stores live transports or discovered Provider identities here.
+	MCP []mcpclient.Config
 	// ProviderIDs identifies replaceable implementations by canonical tool name.
 	// Global sources and independent Sessions may bind their own schemas.
 	ProviderIDs map[string]tools.ProviderID
@@ -163,7 +167,7 @@ func (owner *Registry) ConfigureSession(identifier session.SessionID, input Cata
 	if err != nil {
 		return err
 	}
-	if !captured.InheritGlobal {
+	if !captured.InheritGlobal && len(captured.MCP) == 0 {
 		for name := range captured.Policies {
 			if !slices.ContainsFunc(captured.Schemas, func(entry llm.ToolSchema) bool { return entry.Name == name }) {
 				return fmt.Errorf("tools: independent policy %q requires an owned schema", name)
@@ -206,6 +210,7 @@ func (owner *Registry) Read(identifier session.SessionID) Configuration {
 	}
 	for _, entries := range owner.sources {
 		combined.Schemas = append(combined.Schemas, entries.Schemas...)
+		combined.MCP = append(combined.MCP, entries.Clone().MCP...)
 		maps.Copy(combined.ProviderIDs, entries.ProviderIDs)
 		for name, policy := range entries.Policies {
 			combined.Policies[name] = policy
@@ -232,6 +237,10 @@ func (owner *Registry) Read(identifier session.SessionID) Configuration {
 
 // Clone detaches schema bytes and optional values from caller mutation.
 func (input Catalog) Clone() Catalog {
+	input.MCP = slices.Clone(input.MCP)
+	for index := range input.MCP {
+		input.MCP[index].Args = slices.Clone(input.MCP[index].Args)
+	}
 	input.Schemas = slices.Clone(input.Schemas)
 	input.ProviderIDs = maps.Clone(input.ProviderIDs)
 	if input.Restriction != nil {
@@ -266,6 +275,18 @@ func (input Catalog) Clone() Catalog {
 
 func snapshotCatalog(input Catalog) (Catalog, error) {
 	captured := input.Clone()
+	servers := make(map[string]struct{}, len(captured.MCP))
+	for index, definition := range captured.MCP {
+		configuration, err := definition.Validate()
+		if err != nil {
+			return Catalog{}, err
+		}
+		if _, found := servers[configuration.ServerName]; found {
+			return Catalog{}, errors.New("tools: duplicate MCP connection name")
+		}
+		servers[configuration.ServerName] = struct{}{}
+		captured.MCP[index] = configuration
+	}
 	// names maps each validated schema name to true to reject duplicate entries.
 	names := make(map[string]bool, len(captured.Schemas))
 	for index := range captured.Schemas {

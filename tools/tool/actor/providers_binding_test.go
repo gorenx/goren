@@ -49,15 +49,15 @@ func TestProviderBindingSelectsSameNameByPublishedIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, expected := range []*identifiedBinding{first, second} {
-		selected, err := bindings.resolveBinding("search", expected.id)
+		selected, err := bindings.resolveBinding("search", expected.id, nil)
 		if err != nil || selected != expected {
 			t.Fatalf("wrong implementation for %s: %v", expected.id, err)
 		}
 	}
-	if _, err := bindings.resolveBinding("search", "replaced"); err == nil {
+	if _, err := bindings.resolveBinding("search", "replaced", nil); err == nil {
 		t.Fatal("missing exact identity fell back to another implementation")
 	}
-	if _, err := bindings.resolveBinding("search", ""); err == nil {
+	if _, err := bindings.resolveBinding("search", "", nil); err == nil {
 		t.Fatal("dynamic tool accepted without a published identity")
 	}
 }
@@ -75,7 +75,7 @@ func TestProviderBindingRejectsAmbiguousOrMismatchedSource(t *testing.T) {
 	if err := bindings.Install(nil, duplicate, duplicate); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := bindings.resolveBinding("search", first.id); err == nil {
+	if _, err := bindings.resolveBinding("search", first.id, nil); err == nil {
 		t.Fatal("two providers claim the same published binding")
 	}
 	dishonest := &Providers{}
@@ -86,7 +86,7 @@ func TestProviderBindingRejectsAmbiguousOrMismatchedSource(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := dishonest.resolveBinding("search", "other"); err == nil {
+	if _, err := dishonest.resolveBinding("search", "other", nil); err == nil {
 		t.Fatal("Provider source returned an unselected implementation")
 	}
 }

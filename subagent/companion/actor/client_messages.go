@@ -9,7 +9,6 @@ import (
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
 	companions "github.com/gorenx/goren/subagent/companion"
-	"github.com/gorenx/goren/subagent/tools/report"
 )
 
 type sendMessage struct {
@@ -28,8 +27,6 @@ type reportMessage struct {
 	child agentregistry.Creation
 	// message contains the report with a stable ID and subagent-report provenance.
 	message agentmessage.UserMessage
-	// scheduling selects quiet Inject admission or next-step Steer admission.
-	scheduling report.Delivery
 }
 
 // SendMessage queues the next turn of an available direct Companion. Its result
@@ -55,10 +52,10 @@ func (sender *Client) SendMessage(ctx context.Context, child session.SessionID, 
 	return result.messageID, errors.Join(err, result.err)
 }
 
-// Report delivers explicitly selected child output to this Client's exact parent.
+// Report queues child output for the parent's next step or turn without waking it.
 // The caller supplies a trusted child Creation; the Steward verifies membership.
-func (sender *Client) Report(ctx context.Context, child agentregistry.Creation, output string, scheduling report.Delivery) (agentmessage.MessageID, error) {
-	if sender == nil || ctx == nil || child.AgentID == "" || child.CreationID == "" || (scheduling != report.Quiet && scheduling != report.NextStep) {
+func (sender *Client) Report(ctx context.Context, child agentregistry.Creation, output string) (agentmessage.MessageID, error) {
+	if sender == nil || ctx == nil || child.AgentID == "" || child.CreationID == "" {
 		return "", companions.ErrInvalid
 	}
 	message, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
@@ -71,10 +68,9 @@ func (sender *Client) Report(ctx context.Context, child agentregistry.Creation, 
 		return "", err
 	}
 	result, err := sender.request(ctx, reportMessage{
-		ctx:        ctx,
-		child:      child,
-		message:    message,
-		scheduling: scheduling,
+		ctx:     ctx,
+		child:   child,
+		message: message,
 	})
 	return result.messageID, errors.Join(err, result.err)
 }

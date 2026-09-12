@@ -25,6 +25,7 @@ import (
 	usersettings "github.com/gorenx/goren/settings"
 	settingsactor "github.com/gorenx/goren/settings/actor"
 	"github.com/gorenx/goren/systemprompt"
+	runtimeactor "github.com/gorenx/goren/tools/runtime/actor"
 	toolactor "github.com/gorenx/goren/tools/tool/actor"
 	"github.com/gorenx/goren/web"
 	goakt "github.com/tochemey/goakt/v4/actor"
@@ -235,7 +236,7 @@ func (owner *Server) Start(ctx context.Context) (failure error) {
 		return err
 	}
 	constructors := &toolactor.Providers{}
-	owner.system, err = goakt.NewActorSystem("goren", goakt.WithPubSub(), goakt.WithLogger(log.DiscardLogger), goakt.WithExtensions(constructors))
+	owner.system, err = goakt.NewActorSystem("goren", goakt.WithPubSub(), goakt.WithLogger(log.DiscardLogger), goakt.WithExtensions(constructors, &runtimeactor.Provider{}))
 	if err != nil {
 		return err
 	}

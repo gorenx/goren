@@ -11,7 +11,6 @@ import (
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 	companions "github.com/gorenx/goren/subagent/companion"
-	"github.com/gorenx/goren/subagent/tools/report"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
@@ -75,25 +74,10 @@ func (owner *steward) reportMessage(gc *goakt.GrainContext, input reportMessage)
 		})
 		return
 	}
-	var request any
-	switch input.scheduling {
-	case report.Quiet:
-		request = loopactor.Inject{
-			CreationID: owner.parent.CreationID,
-			Message:    input.message,
-		}
-	case report.NextStep:
-		request = loopactor.Steer{
-			CreationID: owner.parent.CreationID,
-			Message:    input.message,
-		}
-	default:
-		gc.Response(response{
-			err: companions.ErrInvalid,
-		})
-		return
-	}
-	owner.deliver(gc, input.ctx, input.child, owner.parent, input.message, request)
+	owner.deliver(gc, input.ctx, input.child, owner.parent, input.message, loopactor.Inject{
+		CreationID: owner.parent.CreationID,
+		Message:    input.message,
+	})
 }
 
 func (owner *steward) deliver(gc *goakt.GrainContext, ctx context.Context, child, target agentregistry.Creation, message agentmessage.UserMessage, input any) {

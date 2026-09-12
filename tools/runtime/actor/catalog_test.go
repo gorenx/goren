@@ -22,7 +22,11 @@ func startCatalog(t *testing.T, pubsub bool, entries tool.Providers, sources ...
 	if err != nil {
 		t.Fatal(err)
 	}
-	options := []goakt.Option{goakt.WithLogger(log.DiscardLogger), goakt.WithExtensions(constructors)}
+	provider := &runtimeactor.Provider{}
+	if err := provider.Install(questions{}); err != nil {
+		t.Fatal(err)
+	}
+	options := []goakt.Option{goakt.WithLogger(log.DiscardLogger), goakt.WithExtensions(constructors, provider)}
 	if pubsub {
 		options = append(options, goakt.WithPubSub())
 	}

@@ -165,11 +165,32 @@ func (owner *steward) closeChild(gc *goakt.GrainContext, entry *companion, finis
 	err := gc.PipeToSelf(func() (any, error) {
 		var failure error
 		if finishCurrent && executor != nil {
-			prepared, prepareErr := ask[agentactor.Prepared](ctx, system, executor, agentactor.PrepareClose{
-				CreationID:    creation.CreationID,
-				FinishCurrent: true,
-			})
+			prepared, prepareErr := ask[agentactor.Prepared](
+				ctx,
+				system,
+				executor,
+				agentactor.PrepareClose{
+					CreationID:    creation.CreationID,
+					FinishCurrent: true,
+				},
+			)
 			failure = errors.Join(prepareErr, prepared.Err)
+			if failure != nil && ctx.Err() == nil {
+				// Another ordinary close may have already released this exact child.
+				// Only a successful Registry reply can supersede a stale endpoint failure.
+				admitted, admissionErr := ask[agentregistry.Completion](
+					ctx,
+					system,
+					authority,
+					agentregistry.CheckAdmission{
+						Creation: creation,
+					},
+				)
+				if admissionErr == nil && (errors.Is(admitted.Err, agentregistry.ErrCreation) ||
+					errors.Is(admitted.Err, agent.ErrClosing)) {
+					failure = nil
+				}
+			}
 		}
 		// Parent shutdown cancels a natural-completion wait and proceeds through
 		// ordinary Registry cancellation. It cannot abandon resource settlement.

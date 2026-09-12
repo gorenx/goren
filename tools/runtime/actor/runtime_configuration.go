@@ -26,6 +26,9 @@ func (owner *Runtime) receiveConfiguration(gc *goakt.GrainContext) bool {
 			gc.Response(Definitions{Err: errors.New("tools: configuration requires an idle runtime and current creation")})
 			return true
 		}
+		if owner.connections.changed() {
+			owner.changed = true
+		}
 		if !owner.changed {
 			definitions, err := owner.toolRuntime.Definitions()
 			gc.Response(Definitions{
@@ -48,9 +51,28 @@ func (owner *Runtime) receiveConfiguration(gc *goakt.GrainContext) bool {
 		business := owner.toolRuntime
 		directory := owner.catalog
 		instances := owner.instances
+		peers := owner.connections
+		agentID := owner.agentID
 		owner.schedule(gc, current, func(ctx context.Context) error {
-			_, err := business.Apply(ctx, directory, instances)
-			return err
+			configuration, err := directory.configuration(ctx, agentID)
+			if err != nil {
+				return err
+			}
+			definitions := append(configuration.Global.MCP, configuration.Custom.MCP...)
+			if err := peers.reconcile(ctx, definitions); err != nil {
+				return err
+			}
+			if err := peers.refresh(ctx); err != nil {
+				return err
+			}
+			if _, err := business.Apply(ctx, directory, instances); err != nil {
+				return err
+			}
+			applied, err := business.Snapshot()
+			if err != nil {
+				return err
+			}
+			return peers.retire(ctx, applied.ProviderIDs)
 		})
 	case CancelConfiguration:
 		if input.CreationID == owner.creationID &&

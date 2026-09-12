@@ -10,6 +10,7 @@ import (
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/toolaskuser"
 	toolregistry "github.com/gorenx/goren/tools/registry"
+	runtimeactor "github.com/gorenx/goren/tools/runtime/actor"
 	"github.com/gorenx/goren/tools/tool"
 	toolactor "github.com/gorenx/goren/tools/tool/actor"
 	"github.com/gorenx/goren/userquestions"
@@ -49,6 +50,9 @@ func (owner *Server) initializeToolProviders(ctx context.Context, sessions *goak
 		return err
 	}
 	questions := userquestions.New(owner.api.Interactions(), authority)
+	if err := runtimeactor.Install(system, questions); err != nil {
+		return err
+	}
 	asking, err := toolaskuser.NewProvider(questions)
 	if err != nil {
 		return err

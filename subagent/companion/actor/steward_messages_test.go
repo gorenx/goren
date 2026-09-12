@@ -26,12 +26,20 @@ import (
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
 
-func messagingFixture(t *testing.T) (*stewardship, *Messenger, View) {
+func messagingFixture(t *testing.T, prepare ...func(*stewardship) tool.Providers) (*stewardship, *Messenger, View) {
 	t.Helper()
 	var messaging *Messenger
-	fixture := newStewardship(t, func(current *stewardship) tool.Providers {
+	setup := func(current *stewardship) tool.Providers {
 		var err error
 		messaging, err = NewMessenger(current.system, current.authority)
+		if err != nil {
+			t.Fatal(err)
+		}
+		observer, err := NewReader(current.system, current.authority)
+		if err != nil {
+			t.Fatal(err)
+		}
+		listing, err := control.NewListProvider(observer)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -39,21 +47,23 @@ func messagingFixture(t *testing.T) (*stewardship, *Messenger, View) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		reporting, err := report.NewProvider(messaging, report.NextStep)
+		reporting, err := report.NewProvider(messaging, report.Quiet)
 		if err != nil {
 			t.Fatal(err)
 		}
 		current.input.Tools = &toolregistry.Catalog{
-			Schemas: []llm.ToolSchema{control.MessageSchema()},
+			Schemas: []llm.ToolSchema{control.MessageSchema(), control.ListSchema()},
 		}
 		current.creator.catalog = &toolregistry.Catalog{
 			Schemas: []llm.ToolSchema{report.Schema()},
 		}
 		return tool.Providers{
 			"send_message": dispatch,
+			"list_agents":  listing,
 			"report":       reporting,
 		}
-	})
+	}
+	fixture := newStewardship(t, append([]func(*stewardship) tool.Providers{setup}, prepare...)...)
 	if _, err := fixture.client.Create(t.Context(), Create{
 		Name:    "reviewer",
 		Enabled: true,
@@ -209,9 +219,17 @@ func (fixture *stewardship) persistedMessage(t *testing.T, expected agentregistr
 	if flushed.Err != nil {
 		t.Fatal(flushed.Err)
 	}
+	return fixture.storedMessage(t, expected, identifier)
+}
+
+func (fixture *stewardship) storedMessage(t *testing.T, expected agentregistry.Creation, identifier agentmessage.MessageID) agentmessage.UserMessage {
+	t.Helper()
 	stored, err := fixture.creator.storage.Load(t.Context(), expected.AgentID)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if stored == nil {
+		t.Fatal("target Session missing from storage")
 	}
 	for _, event := range stored.Events {
 		if event.Type != agent.InboxSplicedEventName {
@@ -356,6 +374,13 @@ func TestCompanionToolErrorsPreserveInboxAndDrainingChildCanReport(t *testing.T)
 func TestCompanionQuietReportDoesNotWakeParentAndClosureRejectsDelivery(t *testing.T) {
 	fixture, messaging, child := messagingFixture(t)
 	ctx := tools.WithAgentCreationID(t.Context(), child.Creation.CreationID)
+	if _, err := messaging.Report(ctx, report.Report{
+		ChildSessionID: child.Creation.AgentID,
+		Output:         "must not wake parent",
+		Delivery:       report.NextStep,
+	}); err == nil {
+		t.Fatal("Companion accepted a parent-waking report policy")
+	}
 	identifier, err := messaging.Report(ctx, report.Report{
 		ChildSessionID: child.Creation.AgentID,
 		Output:         "quiet finding",
@@ -371,7 +396,7 @@ func TestCompanionQuietReportDoesNotWakeParentAndClosureRejectsDelivery(t *testi
 	if err := fixture.client.Close(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fixture.client.Report(t.Context(), child.Creation, "late", report.Quiet); !errors.Is(err, agent.ErrClosing) {
+	if _, err := fixture.client.Report(t.Context(), child.Creation, "late"); !errors.Is(err, agent.ErrClosing) {
 		t.Fatalf("closed Steward accepted report: %v", err)
 	}
 	closed := request[agentactor.Closed](t, fixture.system, fixture.authority, agentregistry.CloseAgent{

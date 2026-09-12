@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 	agentactor "github.com/gorenx/goren/agent/actor"
 	"github.com/gorenx/goren/agentmessage"
+	"github.com/gorenx/goren/mcpclient"
 	"github.com/gorenx/goren/session"
 	toolruntime "github.com/gorenx/goren/tools/runtime"
 	goakt "github.com/tochemey/goakt/v4/actor"
@@ -27,6 +28,8 @@ type Runtime struct {
 	toolRuntime *toolruntime.Runtime
 	catalog     *Catalog
 	instances   *Instances
+	// connections owns Session MCP transports; tools borrow them until release.
+	connections *connections
 	active      *operation
 	// calls maps a model tool-call ID to its retained business Call and current
 	// cancellation/reply handles. Entries remain until result consumption releases
@@ -133,17 +136,36 @@ func (owner *Runtime) OnReceive(gc *goakt.GrainContext) {
 		owner.toolRuntime = business
 		owner.catalog = directory
 		owner.instances = instances
+		peers := &connections{
+			servers: make(map[string]*mcpclient.Connection),
+		}
+		if source, ok := gc.ActorSystem().Extension(providerID).(*Provider); ok {
+			peers.questions = source.questions
+		}
+		owner.connections = peers
+		directory.connections = peers
 		// The first Turn rechecks facts changed before subscription became active.
 		owner.changed = true
-		owner.schedule(gc, input.operation, func(ctx context.Context) error {
-			if settings.Config != nil {
-				err := directory.ConfigureSession(ctx, settings.AgentID, *settings.Config)
+		owner.schedule(
+			gc,
+			input.operation,
+			func(ctx context.Context) error {
+				if settings.Config != nil {
+					if err := directory.ConfigureSession(ctx, settings.AgentID, *settings.Config); err != nil {
+						return err
+					}
+				}
+				configuration, err := directory.configuration(ctx, settings.AgentID)
 				if err != nil {
 					return err
 				}
-			}
-			return business.Initialize(ctx, directory, instances)
-		})
+				definitions := append(configuration.Global.MCP, configuration.Custom.MCP...)
+				if err := peers.reconcile(ctx, definitions); err != nil {
+					return err
+				}
+				return business.Initialize(ctx, directory, instances)
+			},
+		)
 	case completed:
 		gc.NoErr()
 		if input.operation.refreshID != "" {
@@ -195,7 +217,13 @@ func (owner *Runtime) OnReceive(gc *goakt.GrainContext) {
 		}
 		business := owner.toolRuntime
 		instances := owner.instances
-		owner.schedule(gc, current, func(ctx context.Context) error { return business.Close(ctx, instances) })
+		peers := owner.connections
+		owner.schedule(gc, current, func(ctx context.Context) error {
+			if err := business.Close(ctx, instances); err != nil {
+				return err
+			}
+			return peers.close(ctx)
+		})
 	default:
 		gc.Unhandled()
 	}
@@ -226,8 +254,8 @@ func (owner *Runtime) initialize(gc *goakt.GrainContext, input InitializeRuntime
 		gc.Response(Completion{Err: err})
 		return
 	}
-	// Automatic reactivation may not retain the original GrainOf options.
-	// Enable requests before verifying this activation with the lifecycle owner.
+	// Enable outgoing requests for this activation before claiming its lifetime.
+	// The caller supplies the incoming async envelope independently of activation options.
 	err := gc.EnableReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll)))
 	if err != nil {
 		gc.Response(Completion{Err: err})

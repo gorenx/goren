@@ -43,6 +43,7 @@ func (bindings *Providers) Install(entries tool.Providers, sources ...tool.Provi
 			strings.TrimSpace(name) != name ||
 			name == tools.RunCodeName ||
 			source == nil {
+
 			return errors.New("tools: valid tool names and Providers are required")
 		}
 		captured[name] = source
@@ -57,7 +58,11 @@ func (bindings *Providers) Install(entries tool.Providers, sources ...tool.Provi
 	return nil
 }
 
-func (bindings *Providers) resolveBinding(name string, expected tools.ProviderID) (tool.Provider, error) {
+func (bindings *Providers) resolveBinding(
+	name string,
+	expected tools.ProviderID,
+	local tool.ProviderSource,
+) (tool.Provider, error) {
 	var selected tool.Provider
 	if installed := bindings.entries[name]; installed != nil {
 		actual, err := providerIdentity(installed)
@@ -68,7 +73,11 @@ func (bindings *Providers) resolveBinding(name string, expected tools.ProviderID
 			selected = installed
 		}
 	}
-	for _, source := range bindings.sources {
+	sources := append(append([]tool.ProviderSource(nil), bindings.sources...), local)
+	for _, source := range sources {
+		if source == nil {
+			continue
+		}
 		candidate, exists := source.Provider(name, expected)
 		if !exists {
 			continue

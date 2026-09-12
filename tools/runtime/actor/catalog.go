@@ -13,9 +13,10 @@ import (
 
 // Catalog reads unmerged Registry configuration from a framework task.
 type Catalog struct {
-	system  goakt.ActorSystem
-	target  *goakt.GrainIdentity
-	timeout time.Duration
+	system      goakt.ActorSystem
+	target      *goakt.GrainIdentity
+	timeout     time.Duration
+	connections *connections
 }
 
 // NewCatalog binds an existing Schema Registry without starting Actors.
@@ -30,9 +31,24 @@ func NewCatalog(system goakt.ActorSystem, target *goakt.GrainIdentity, timeout t
 	}, nil
 }
 
-// Read returns global and custom facts; it does not interpret policy or merge schemas.
+// Read includes this Runtime's discovered tools; business Runtime applies policy.
 func (endpoint *Catalog) Read(ctx context.Context, identifier session.SessionID) (toolregistry.Configuration, error) {
-	payload, err := endpoint.system.AskGrain(ctx, endpoint.target, catalogactor.ReadConfiguration{SessionID: identifier}, endpoint.timeout)
+	selection, err := endpoint.configuration(ctx, identifier)
+	if err != nil {
+		return toolregistry.Configuration{}, err
+	}
+	if endpoint.connections != nil {
+		selection.Global, err = endpoint.connections.catalog(selection.Global)
+	}
+	return selection, err
+}
+
+func (endpoint *Catalog) configuration(ctx context.Context, identifier session.SessionID) (toolregistry.Configuration, error) {
+	payload, err := endpoint.system.AskGrain(
+		ctx, endpoint.target,
+		catalogactor.ReadConfiguration{SessionID: identifier},
+		endpoint.timeout,
+	)
 	if err != nil {
 		return toolregistry.Configuration{}, err
 	}
@@ -45,10 +61,15 @@ func (endpoint *Catalog) Read(ctx context.Context, identifier session.SessionID)
 
 // ConfigureSession records an explicitly supplied Session catalog before initialization.
 func (endpoint *Catalog) ConfigureSession(ctx context.Context, identifier session.SessionID, input toolregistry.Catalog) error {
-	payload, err := endpoint.system.AskGrain(ctx, endpoint.target, catalogactor.ConfigureSession{
-		SessionID: identifier,
-		Catalog:   input,
-	}, endpoint.timeout)
+	payload, err := endpoint.system.AskGrain(
+		ctx,
+		endpoint.target,
+		catalogactor.ConfigureSession{
+			SessionID: identifier,
+			Catalog:   input,
+		},
+		endpoint.timeout,
+	)
 	if err != nil {
 		return err
 	}

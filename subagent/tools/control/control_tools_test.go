@@ -73,7 +73,7 @@ func TestControlToolsUseInvocationSessionAsAuthority(t *testing.T) {
 }
 
 func TestListProjectionUsesActivityReaderAndOmitsOneShot(t *testing.T) {
-	adapter := &listTool{
+	adapter := &directoryLister{
 		directory: emptyDirectory{},
 		activity: activityRecord{
 			"running": agent.StatusRunning,

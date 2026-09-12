@@ -19,6 +19,7 @@ type Grain struct {
 	creationID      string
 	agentID         session.SessionID
 	authority       *goakt.GrainIdentity
+	providers       tool.ProviderSource
 	business        *tool.Tool
 	active          *operation
 	// calls maps an executing invocation's CallID to its reply and cancellation
@@ -88,7 +89,7 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 			})
 			return
 		}
-		source, err := constructors.resolveBinding(owner.business.Name(), input.ProviderID)
+		source, err := constructors.resolveBinding(owner.business.Name(), input.ProviderID, owner.providers)
 		if err != nil {
 			gc.Response(Completion{
 				Err: err,

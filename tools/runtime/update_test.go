@@ -124,6 +124,65 @@ func TestRuntimeRollsBackEveryAttemptAndPreservesOriginalWork(t *testing.T) {
 	}
 }
 
+func TestRuntimeRecoveryAppliesCurrentConfiguration(t *testing.T) {
+	changed := testSchema("read")
+	changed.Description = "Current definition"
+	for _, scenario := range []struct {
+		name    string
+		schemas []llm.ToolSchema
+		names   []string
+	}{
+		{
+			name:    "addition",
+			schemas: []llm.ToolSchema{testSchema("added"), testSchema("latest"), testSchema("read")},
+			names:   []string{"added", "latest", "read"},
+		},
+		{
+			name:    "definition-change",
+			schemas: []llm.ToolSchema{changed},
+			names:   []string{"read"},
+		},
+		{
+			name: "removal",
+		},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			owner, source, endpoint := initializedRuntime(t)
+			if err := source.registry.RegisterSource("local", toolregistry.Catalog{
+				Schemas: []llm.ToolSchema{testSchema("added"), testSchema("read")},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			endpoint.failure = "retire:read"
+			if complete, err := owner.Apply(t.Context(), source, endpoint); complete || err == nil {
+				t.Fatal("retirement failure was reported complete")
+			}
+			if err := source.registry.RegisterSource("local", toolregistry.Catalog{
+				Schemas: scenario.schemas,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			endpoint.failure = ""
+			endpoint.events = nil
+			if complete, err := owner.Apply(t.Context(), source, endpoint); !complete || err != nil {
+				t.Fatalf("recovery: complete=%v error=%v", complete, err)
+			}
+			captured, err := owner.Definitions()
+			if err != nil || !slices.Equal(captured.KnownNames, scenario.names) {
+				t.Fatalf("current target was not applied: %+v error=%v", captured, err)
+			}
+			if len(endpoint.events) < 2 || !slices.Equal(endpoint.events[:2], []string{"retire:read", "remove:removed"}) {
+				t.Fatalf("recovery repeated confirmed work or started the new target too soon: %v", endpoint.events)
+			}
+			for index, schema := range captured.Schemas {
+				if schema.Description != scenario.schemas[index].Description {
+					t.Fatalf("stale definition: %+v", schema)
+				}
+			}
+		})
+	}
+}
+
 func TestRuntimeCloseRetainsFailedResourceAndRejectsReuse(t *testing.T) {
 	owner, _, endpoint := initializedRuntime(t)
 	endpoint.failure = "remove:removed"

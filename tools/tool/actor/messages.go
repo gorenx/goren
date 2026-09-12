@@ -21,6 +21,8 @@ type Initialize struct {
 	AgentID         session.SessionID
 	Name            string
 	Authority       *goakt.GrainIdentity
+	// Providers is a borrowed Session source owned and released by Tool Runtime.
+	Providers tool.ProviderSource
 }
 
 // RuntimeName encodes the tool segment so logical names containing dots cannot

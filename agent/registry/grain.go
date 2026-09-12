@@ -334,7 +334,10 @@ func (owner *Grain) claimTools(input agentactor.ClaimTools) error {
 		return err
 	}
 	entry := owner.creations[input.AgentID]
-	if entry.services == nil || entry.services.tools == nil || entry.services.tools.release.identity == nil || input.InstanceID == "" {
+	if entry.services == nil ||
+		entry.services.tools == nil ||
+		entry.services.tools.Runtime() == nil ||
+		input.InstanceID == "" {
 		return ErrInstance
 	}
 	endpoint := entry.services.tools

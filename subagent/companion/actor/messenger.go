@@ -52,6 +52,9 @@ func (sender *Messenger) Send(ctx context.Context, input control.Message) (agent
 // Report resolves only the exact caller's direct parent. The Steward then checks
 // that it still owns that child Creation before entering the parent's Inbox.
 func (sender *Messenger) Report(ctx context.Context, input report.Report) (agentmessage.MessageID, error) {
+	if input.Delivery != report.Quiet {
+		return "", errors.New("companion: reports must queue without waking the parent")
+	}
 	caller, err := callerCreation(ctx, input.ChildSessionID)
 	if err != nil {
 		return "", err
@@ -75,7 +78,7 @@ func (sender *Messenger) Report(ctx context.Context, input report.Report) (agent
 	if err != nil {
 		return "", err
 	}
-	return endpoint.Report(ctx, caller, input.Output, input.Delivery)
+	return endpoint.Report(ctx, caller, input.Output)
 }
 
 func (sender *Messenger) client(ctx context.Context, parent agentregistry.Creation) (*Client, error) {

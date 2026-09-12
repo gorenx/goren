@@ -24,6 +24,8 @@ type Directory interface {
 type Snapshot struct {
 	Names   []string
 	Schemas []llm.ToolSchema
+	// ProviderIDs records the implementation bindings still used by applied tools.
+	ProviderIDs map[string]tools.ProviderID
 	// Policies maps effective tool names to merged execution collaborators for this snapshot.
 	Policies map[string]execution.Policies
 }
@@ -62,7 +64,7 @@ func (owner *Runtime) Initialize(ctx context.Context, directory Directory, insta
 	return err
 }
 
-// Apply merges current Registry facts or resumes the exact unfinished replacement.
+// Apply finishes any pending replacement before reading and applying current Registry facts.
 // Callers must hold the Agent execution boundary until complete is true.
 func (owner *Runtime) Apply(ctx context.Context, directory Directory, instances Instances) (bool, error) {
 	if ctx == nil || directory == nil || instances == nil {
@@ -71,28 +73,37 @@ func (owner *Runtime) Apply(ctx context.Context, directory Directory, instances 
 	if owner.closing {
 		return false, errors.New("tools: runtime is closing")
 	}
-	if owner.pending == nil {
-		input, err := directory.Read(ctx, owner.agentID)
-		if err != nil {
-			return false, err
+	if owner.pending != nil {
+		complete, err := owner.applyUpdate(ctx, instances)
+		if !complete || err != nil {
+			return complete, err
 		}
-		entries, err := Merge(input)
-		if err != nil {
-			return false, err
-		}
-		var previous []string
-		for _, entry := range owner.current {
-			previous = append(previous, entry.Schema.Name)
-		}
-		err = owner.assignVersions(entries)
-		if err != nil {
-			return false, err
-		}
-		if owner.ready && sameTools(entries, owner.current) {
-			return true, nil
-		}
-		owner.pending = NewUpdate(entries, previous)
 	}
+	input, err := directory.Read(ctx, owner.agentID)
+	if err != nil {
+		return false, err
+	}
+	entries, err := Merge(input)
+	if err != nil {
+		return false, err
+	}
+	var previous []string
+	for _, entry := range owner.current {
+		previous = append(previous, entry.Schema.Name)
+	}
+	err = owner.assignVersions(entries)
+	if err != nil {
+		return false, err
+	}
+	if owner.ready && sameTools(entries, owner.current) {
+		return true, nil
+	}
+	owner.pending = NewUpdate(entries, previous)
+	return owner.applyUpdate(ctx, instances)
+}
+
+// applyUpdate retains the original revision and progress until all work settles.
+func (owner *Runtime) applyUpdate(ctx context.Context, instances Instances) (bool, error) {
 	complete, err := owner.pending.Apply(ctx, instances)
 	if !complete {
 		return false, err
@@ -116,9 +127,15 @@ func (owner *Runtime) Snapshot() (Snapshot, error) {
 	if !owner.ready || owner.pending != nil || owner.closing {
 		return Snapshot{}, errors.New("tools: effective tool configuration is unavailable")
 	}
-	captured := Snapshot{Policies: make(map[string]execution.Policies)}
+	captured := Snapshot{
+		Policies:    make(map[string]execution.Policies),
+		ProviderIDs: make(map[string]tools.ProviderID),
+	}
 	for _, entry := range owner.current {
 		captured.Names = append(captured.Names, entry.Schema.Name)
+		if entry.ProviderID != "" {
+			captured.ProviderIDs[entry.Schema.Name] = entry.ProviderID
+		}
 		policies := entry.Policies
 		policies.Guards = slices.Clone(policies.Guards)
 		captured.Policies[entry.Schema.Name] = policies

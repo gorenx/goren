@@ -1,16 +1,13 @@
 package control
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 
-	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/agentmessage"
-	"github.com/gorenx/goren/session"
-	"github.com/gorenx/goren/subagent"
+	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/tools"
 )
 
@@ -33,7 +30,7 @@ var listOutput = json.RawMessage(`{
           "kind": {"type": "string", "const": "child"},
           "id": {"type": "string"},
           "label": {"type": "string"},
-          "status": {"type": "string", "enum": ["running", "idle", "ready"]},
+          "status": {"type": "string", "enum": ["running", "idle", "ready", "starting", "draining", "stopping", "stopped", "start_failed", "close_failed"]},
           "parent": {"type": "string"},
           "depth": {"type": "integer"}
         },
@@ -59,28 +56,29 @@ type listArguments struct {
 	Scope string `json:"scope,omitempty"`
 }
 
-type listEntry struct {
-	Kind   string  `json:"kind"`
-	ID     string  `json:"id"`
-	Label  string  `json:"label,omitempty"`
-	Status string  `json:"status,omitempty"`
-	Reason string  `json:"reason,omitempty"`
-	Parent *string `json:"parent,omitempty"`
-	Depth  *int64  `json:"depth,omitempty"`
-}
+const listDescription = "List background agents by durable id, label and observed state without starting or resuming them. children selects direct children; descendants follows the configured directory tree."
 
 func (owner *controlTools) listDefinition() tools.ToolDefinition {
 	adapter := &listTool{
-		directory: owner.directory,
-		activity:  owner.activity,
+		source: &directoryLister{
+			directory: owner.directory,
+			activity:  owner.activity,
+		},
 	}
-
-	return tools.ToolDefinition{
+	return adapter.definition(llm.ToolSchema{
 		Name:        "list_agents",
-		Description: "List continuable background subagents by durable id and label. children lists direct children; descendants walks the complete tree without resuming cold Agents.",
+		Description: listDescription,
 		Parameters:  listParameters,
+	})
+}
+
+func (adapter *listTool) definition(input llm.ToolSchema) tools.ToolDefinition {
+	return tools.ToolDefinition{
+		Name:        input.Name,
+		Description: input.Description,
+		Parameters:  append([]byte(nil), input.Parameters...),
 		Output: tools.ToolOutputDefinition{
-			Schema:   listOutput,
+			Schema:   append([]byte(nil), listOutput...),
 			Renderer: adapter,
 		},
 		Executor: adapter,
@@ -91,6 +89,12 @@ func (adapter *listTool) Execute(
 	rawArguments json.RawMessage,
 	runContext tools.ToolRunContext,
 ) (json.RawMessage, error) {
+	if runContext.Context == nil {
+		return nil, errors.New("list_agents requires a context")
+	}
+	if err := runContext.Context.Err(); err != nil {
+		return nil, err
+	}
 	parentID := runContext.Execution.SessionID
 	if parentID == "" {
 		return nil, errors.New("list_agents requires a calling Agent")
@@ -102,109 +106,21 @@ func (adapter *listTool) Execute(
 	if request.Scope == "" {
 		request.Scope = "children"
 	}
-	entries := make([]listEntry, 0)
-	switch request.Scope {
-	case "children":
-		rows, listErr := adapter.directory.ListChildren(
-			runContext.Context,
-			parentID,
-		)
-		if listErr != nil {
-			return nil, listErr
-		}
-		for _, row := range rows {
-			projected, included, projectErr := adapter.project(runContext.Context, row, nil, nil)
-			if projectErr != nil {
-				return nil, projectErr
-			}
-			if included {
-				entries = append(entries, projected)
-			}
-		}
-	case "descendants":
-		rows, listErr := adapter.directory.ListDescendants(
-			runContext.Context,
-			parentID,
-		)
-		if listErr != nil {
-			return nil, listErr
-		}
-		for _, row := range rows {
-			parentID := string(row.ParentID)
-			depth := row.Depth
-			projected, included, projectErr := adapter.project(
-				runContext.Context,
-				row.Entry,
-				&parentID,
-				&depth,
-			)
-			if projectErr != nil {
-				return nil, projectErr
-			}
-			if included {
-				entries = append(entries, projected)
-			}
-		}
-	default:
+	if request.Scope != "children" && request.Scope != "descendants" {
 		return nil, fmt.Errorf("list_agents: unsupported scope %q", request.Scope)
 	}
-	return json.Marshal(entries)
-}
-
-func (adapter *listTool) project(
-	requestContext context.Context,
-	entry subagent.ChildEntry,
-	parentID *string,
-	depth *int64,
-) (listEntry, bool, error) {
-	switch row := entry.(type) {
-	case subagent.ContinuableChildEntry:
-		status, err := adapter.status(requestContext, row.ID)
-		return listEntry{
-			Kind:   "child",
-			ID:     string(row.ID),
-			Label:  row.Label,
-			Status: status,
-			Parent: parentID,
-			Depth:  depth,
-		}, true, err
-	case subagent.BoundChildEntry:
-		status, err := adapter.status(requestContext, row.ID)
-		return listEntry{
-			Kind:   "child",
-			ID:     string(row.ID),
-			Label:  row.Label,
-			Status: status,
-			Parent: parentID,
-			Depth:  depth,
-		}, true, err
-	case subagent.DiagnosticEntry:
-		return listEntry{
-			Kind:   "diagnostic",
-			ID:     string(row.ID),
-			Reason: string(row.Reason),
-			Parent: parentID,
-			Depth:  depth,
-		}, true, nil
-	case subagent.OneShotChildEntry:
-		return listEntry{}, false, nil
-	default:
-		return listEntry{}, false, nil
-	}
-}
-
-func (adapter *listTool) status(requestContext context.Context, childID session.SessionID) (string, error) {
-	status, found, err := adapter.activity.Status(requestContext, childID)
+	entries, err := adapter.source.List(runContext.Context, Listing{
+		ParentSessionID: parentID,
+		Scope:           request.Scope,
+	})
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	if !found {
-		return "ready", nil
+	if entries == nil {
+		entries = []Entry{}
 	}
-	if status == agent.StatusRunning {
-		return "running", nil
-	}
-	return "idle", nil
+
+	return json.Marshal(entries)
 }
 
 func (adapter *listTool) Render(
@@ -218,7 +134,7 @@ func (adapter *listTool) Render(
 	if request.Scope == "" {
 		request.Scope = "children"
 	}
-	var entries []listEntry
+	var entries []Entry
 	if decodeErr := json.Unmarshal(rawValue, &entries); decodeErr != nil {
 		return nil, decodeErr
 	}
@@ -280,6 +196,6 @@ func int64OrZero(value *int64) int64 {
 }
 
 type listTool struct {
-	directory subagent.ChildDirectory
-	activity  activityReader
+	// source owns directory interpretation and lifecycle observation.
+	source Lister
 }

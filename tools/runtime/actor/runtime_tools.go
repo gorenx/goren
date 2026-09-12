@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/gorenx/goren/tools"
 	catalogactor "github.com/gorenx/goren/tools/registry/actor"
+	"github.com/gorenx/goren/tools/tool"
 	toolactor "github.com/gorenx/goren/tools/tool/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/reentrancy"
@@ -222,6 +222,45 @@ func (owner *Runtime) scheduleTool(gc *goakt.GrainContext, name string, instance
 	system := gc.ActorSystem()
 	directory := owner.catalog.target
 	timeout := owner.instances.timeout
+	var providers tool.ProviderSource
+	if owner.connections != nil {
+		providers = owner.connections
+	}
+	confirmed := make(chan error, 1)
+	if !removing && result.identity == nil {
+		address, err := goakt.GrainOf[*toolactor.Grain](
+			ctx,
+			system,
+			toolactor.RuntimeName(string(agentID), name),
+			goakt.WithLongLivedGrain(),
+			goakt.WithGrainReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))),
+		)
+		if err != nil {
+			cancel()
+			instance.active = nil
+			reply.Response(toolInstance{Err: err})
+			return
+		}
+		instance.identity = address
+		result.identity = address
+	}
+	target := result.identity
+	var command any
+	if !removing {
+		command = toolactor.Initialize{
+			AgentCreationID: agentCreationID,
+			CreationID:      creationID,
+			AgentID:         agentID,
+			Name:            name,
+			Authority:       authority,
+			Providers:       providers,
+		}
+	} else if phase == toolInitialized || phase == toolClosing {
+		command = toolactor.Close{
+			CreationID: creationID,
+			Context:    ctx,
+		}
+	}
 	err := gc.PipeToSelf(func() (any, error) {
 		// Only detached transport values cross into this task. Lifecycle records
 		// remain mailbox-owned, including claims received during Initialize.
@@ -231,10 +270,7 @@ func (owner *Runtime) scheduleTool(gc *goakt.GrainContext, name string, instance
 			}
 			if result.phase == toolInitialized || result.phase == toolClosing {
 				result.phase = toolClosing
-				result.err = requestTool(ctx, system, result.identity, toolactor.Close{
-					CreationID: creationID,
-					Context:    ctx,
-				}, timeout)
+				result.err = <-confirmed
 				if result.err != nil {
 					return result, nil
 				}
@@ -261,20 +297,7 @@ func (owner *Runtime) scheduleTool(gc *goakt.GrainContext, name string, instance
 			}
 			return result, nil
 		}
-		if result.identity == nil {
-			result.identity, result.err = goakt.GrainOf[*toolactor.Grain](ctx, system, toolactor.RuntimeName(string(agentID), name),
-				goakt.WithLongLivedGrain(), goakt.WithGrainReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))))
-			if result.err != nil {
-				return result, nil
-			}
-		}
-		result.err = requestTool(ctx, system, result.identity, toolactor.Initialize{
-			AgentCreationID: agentCreationID,
-			CreationID:      creationID,
-			AgentID:         agentID,
-			Name:            name,
-			Authority:       authority,
-		}, timeout)
+		result.err = <-confirmed
 		if result.err != nil {
 			return result, nil
 		}
@@ -307,16 +330,20 @@ func (owner *Runtime) scheduleTool(gc *goakt.GrainContext, name string, instance
 			reply.Response(toolInstance{Err: err})
 		}
 	}
-}
-
-func requestTool(ctx context.Context, system goakt.ActorSystem, target *goakt.GrainIdentity, message any, timeout time.Duration) error {
-	payload, err := system.AskGrain(ctx, target, message, timeout)
-	if err != nil {
-		return err
+	if err == nil && command != nil {
+		gc.RequestGrain(target, command,
+			goakt.WithRequestTimeout(timeout),
+			goakt.WithReentrancyMode(reentrancy.AllowAll),
+		).Then(func(payload any, failure error) {
+			if failure == nil {
+				acknowledged, valid := payload.(toolactor.Completion)
+				if !valid {
+					failure = errors.New("tools: invalid tool lifecycle reply")
+				} else {
+					failure = acknowledged.Err
+				}
+			}
+			confirmed <- failure
+		})
 	}
-	result, valid := payload.(toolactor.Completion)
-	if !valid {
-		return errors.New("tools: invalid tool lifecycle reply")
-	}
-	return result.Err
 }

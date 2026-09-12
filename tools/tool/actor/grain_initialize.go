@@ -80,6 +80,7 @@ func (owner *Grain) initialize(gc *goakt.GrainContext, input Initialize) {
 				owner.agentCreationID = input.AgentCreationID
 				owner.agentID = input.AgentID
 				owner.authority = input.Authority
+				owner.providers = input.Providers
 			}
 			owner.finish(current, err)
 		},
