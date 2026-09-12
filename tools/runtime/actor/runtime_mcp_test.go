@@ -210,124 +210,31 @@ func finishMCP(t *testing.T, system goakt.ActorSystem, address *goakt.GrainIdent
 	}
 }
 
-func TestRuntimeMCPReplacesConfigurationAfterCallsFinish(t *testing.T) {
+func TestRuntimeMCPKeepsConnectionConfigurationUntilClosed(t *testing.T) {
 	firstRemote, firstConfig := serveMCP(t, "first endpoint")
 	secondRemote, secondConfig := serveMCP(t, "second endpoint")
 	system, registry, catalog := startCatalog(t, true, nil)
-	sender, _ := newMCPRuntime(t, system, registry, "agent", &toolregistry.Catalog{}, []mcpclient.Config{firstConfig})
+	sender, authority := newMCPRuntime(t, system, registry, "agent", &toolregistry.Catalog{}, []mcpclient.Config{firstConfig})
 	if err := startClient(t, system, sender, t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	name := mcpclient.ToolName("fixture", "read")
-	before := ask[runtimeactor.Definitions](t, system, sender.Runtime(), runtimeactor.ReadDefinitions{
-		CreationID: "creation",
-	})
-	if before.Err != nil || len(before.Value.Schemas) != 1 {
-		t.Fatalf("initial definitions: %+v", before)
-	}
-	original := ask[catalogactor.ToolAddress](t, system, registry, catalogactor.FindTool{
-		AgentID: "agent",
-		Name:    name,
-	})
-	prepared := ask[runtimeactor.CallResult](t, system, sender.Runtime(), runtimeactor.PrepareCall{
-		CreationID: "creation",
-		Context:    t.Context(),
-		Input: tools.ToolExecutionInput{
-			SessionID: "agent",
-			CallID:    "read-call",
-			Name:      name,
-			Arguments: json.RawMessage(`{}`),
-		},
-	})
-	if prepared.Err != nil || prepared.Stage != tools.ScheduledDispatch {
-		t.Fatalf("preparation: %+v", prepared)
-	}
 	if err := catalog.ConfigureSession(t.Context(), "agent", toolregistry.Catalog{
 		MCP: []mcpclient.Config{secondConfig},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	refresh := func() runtimeactor.Definitions {
-		return ask[runtimeactor.Definitions](t, system, sender.Runtime(), runtimeactor.RefreshConfiguration{
-			CreationID: "creation",
-			ID:         "configuration",
-		})
-	}
-	if result := refresh(); result.Err == nil {
-		t.Fatal("configuration changed with a prepared call still active")
-	}
-	if firstRemote.closed.Load() != 0 || secondRemote.listens.Load() != 0 {
-		t.Fatal("active call did not retain the original connection")
-	}
-	finishMCP(t, system, sender.Runtime(), firstRemote.result)
-
-	// Failed discovery must leave the applied tools usable on the first endpoint.
-	secondRemote.unavailable.Store(true)
-	failed := awaitProviderRefresh(t, refresh, func(result runtimeactor.Definitions) bool {
-		return result.Err != nil
+	result := ask[runtimeactor.Definitions](t, system, sender.Runtime(), runtimeactor.RefreshConfiguration{
+		CreationID: "creation",
+		ID:         "discovery",
 	})
-	if failed.Err == nil || firstRemote.closed.Load() != 0 {
-		t.Fatal("failed replacement released the applied connection")
+	if result.Err != nil || firstRemote.closed.Load() != 0 || secondRemote.listens.Load() != 0 {
+		t.Fatalf("running connection replaced: %+v", result)
 	}
-	invokeMCP(t, system, sender.Runtime(), "agent", name, firstRemote.result)
-	secondRemote.unavailable.Store(false)
-	replaced := refresh()
-	if replaced.Err != nil || len(replaced.Value.Schemas) != 1 {
-		t.Fatalf("replacement retry: %+v", replaced)
+	invokeMCP(t, system, sender.Runtime(), "agent", mcpclient.ToolName("fixture", "read"), firstRemote.result)
+	if err := closeClient(t, system, sender, t.Context(), ask[string](t, system, authority, readClaim{})); err != nil {
+		t.Fatal(err)
 	}
 	awaitMCPClosed(t, firstRemote)
-	if secondRemote.listens.Load() != 1 || secondRemote.closed.Load() != 0 {
-		t.Fatal("replacement did not retain exactly one live candidate")
-	}
-	if replaced.Value.Schemas[0].Version != before.Value.Schemas[0].Version {
-		t.Fatal("changing only the endpoint changed the model schema version")
-	}
-	current := ask[catalogactor.ToolAddress](t, system, registry, catalogactor.FindTool{
-		AgentID: "agent",
-		Name:    name,
-	})
-	if !original.Found || !current.Found || original.CreationID != current.CreationID || !original.Actor.Equal(current.Actor) {
-		t.Fatal("changing the endpoint recreated the ToolActor")
-	}
-	invokeMCP(t, system, sender.Runtime(), "agent", name, secondRemote.result)
-
-	// A policy change requires application but must reuse the same connection.
-	hidden := false
-	if err := catalog.ConfigureSession(t.Context(), "agent", toolregistry.Catalog{
-		MCP: []mcpclient.Config{secondConfig},
-		Policies: map[string]toolregistry.Policy{
-			name: {
-				Visible: &hidden,
-			},
-		},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	reconfigured := awaitProviderRefresh(t, refresh, func(result runtimeactor.Definitions) bool {
-		return result.Err != nil || len(result.Value.Schemas) == 0
-	})
-	if reconfigured.Err != nil || !slices.Equal(reconfigured.Value.KnownNames, []string{name}) || secondRemote.listens.Load() != 1 {
-		t.Fatalf("policy application reopened or lost the connection: %+v", reconfigured)
-	}
-	invokeMCP(t, system, sender.Runtime(), "agent", name, secondRemote.result)
-
-	if err := catalog.ConfigureSession(t.Context(), "agent", toolregistry.Catalog{}); err != nil {
-		t.Fatal(err)
-	}
-	removed := awaitProviderRefresh(t, refresh, func(result runtimeactor.Definitions) bool {
-		return result.Err != nil || len(result.Value.KnownNames) == 0
-	})
-	if removed.Err != nil {
-		t.Fatal(removed.Err)
-	}
-	awaitMCPClosed(t, secondRemote)
-	address := ask[catalogactor.ToolAddress](t, system, registry, catalogactor.FindTool{
-		AgentID: "agent",
-		Name:    name,
-	})
-	if address.Found {
-		t.Fatal("removing the connection left an executable tool")
-	}
 }
 
 func TestRuntimeMCPInitializationUsesOneConfiguration(t *testing.T) {
@@ -359,8 +266,8 @@ func TestRuntimeMCPInitializationUsesOneConfiguration(t *testing.T) {
 		CreationID: "creation",
 		ID:         uuid.NewString(),
 	})
-	if updated.Err != nil || len(updated.Value.KnownNames) != 0 {
-		t.Fatalf("next configuration did not apply independently: %+v", updated)
+	if updated.Err != nil || len(updated.Value.KnownNames) != 1 {
+		t.Fatalf("running configuration changed after initialization: %+v", updated)
 	}
 }
 
@@ -439,8 +346,8 @@ func TestRuntimeMCPSessionsOwnConnectionsAndRefreshIndependently(t *testing.T) {
 	}, func(result runtimeactor.Definitions) bool {
 		return result.Err != nil || slices.Contains(result.Value.KnownNames, added)
 	})
-	if refreshed.Err != nil || len(refreshed.Value.Schemas) != 1 || refreshed.Value.Schemas[0].Name != added {
-		t.Fatalf("refresh lost policy or new tool: %+v", refreshed)
+	if refreshed.Err != nil || len(refreshed.Value.Schemas) != 2 || !slices.Contains(refreshed.Value.KnownNames, added) {
+		t.Fatalf("discovery changed configured flags or lost the new tool: %+v", refreshed)
 	}
 	unchanged := ask[runtimeactor.Definitions](t, system, second.Runtime(), runtimeactor.ReadDefinitions{
 		CreationID: "creation",
@@ -576,74 +483,6 @@ func TestRuntimeMCPClosesConnectionsOnlyAfterToolsRelease(t *testing.T) {
 		t.Fatal(err)
 	}
 	awaitMCPClosed(t, remote)
-}
-
-func TestRuntimeRecoveryInstallsMCPAddedAfterFailedToolUpdate(t *testing.T) {
-	remote, configuration := serveMCP(t, "latest target")
-	installed := &source{}
-	system, registry, catalog := startCatalog(t, true, tool.Providers{
-		toolaskuser.Name: installed,
-	})
-	definition, err := toolaskuser.NewDefinition(questions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	selection := toolregistry.Catalog{
-		Schemas: []llm.ToolSchema{
-			{
-				Name:        definition.Name,
-				Description: definition.Description,
-				Parameters:  definition.Parameters,
-			},
-		},
-	}
-	sender, _ := newMCPRuntime(t, system, registry, "agent", &selection, nil)
-	if err := startClient(t, system, sender, t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	selection.Schemas[0].Description = "Changed tool implementation"
-	installed.closeFailure.Store(true)
-	// Restore cleanup admission even if an assertion aborts this test.
-	t.Cleanup(func() { installed.closeFailure.Store(false) })
-	if err := catalog.ConfigureSession(t.Context(), "agent", selection); err != nil {
-		t.Fatal(err)
-	}
-	refresh := func() runtimeactor.Definitions {
-		return ask[runtimeactor.Definitions](t, system, sender.Runtime(), runtimeactor.RefreshConfiguration{
-			CreationID: "creation",
-			ID:         "update",
-		})
-	}
-	failed := awaitProviderRefresh(t, refresh, func(result runtimeactor.Definitions) bool {
-		return result.Err != nil
-	})
-	if failed.Err == nil || installed.closes.Load() == 0 {
-		t.Fatal("expected unfinished tool retirement")
-	}
-	// The next target introduces the first MCP connection. There is no old MCP
-	// binding whose retirement could prove whether the new target was applied.
-	if err := catalog.ConfigureSession(t.Context(), "agent", toolregistry.Catalog{
-		MCP: []mcpclient.Config{configuration},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	installed.closeFailure.Store(false)
-	result := refresh()
-	name := mcpclient.ToolName("fixture", "read")
-	if result.Err != nil || !slices.Equal(result.Value.KnownNames, []string{name}) {
-		t.Fatalf("old recovery acknowledged without applying the current target: %+v", result)
-	}
-	if len(result.Value.Schemas) != 1 || result.Value.Schemas[0].Name != name {
-		t.Fatalf("new MCP definition was not visible to Prompt: %+v", result)
-	}
-	invokeMCP(t, system, sender.Runtime(), "agent", name, remote.result)
-	removed := ask[catalogactor.ToolAddress](t, system, registry, catalogactor.FindTool{
-		AgentID: "agent",
-		Name:    definition.Name,
-	})
-	if removed.Found {
-		t.Fatal("obsolete local tool remained executable")
-	}
 }
 
 func TestRuntimeGlobalMCPDefinitionsReachPromptAndIndependentAgentStaysEmpty(t *testing.T) {

@@ -161,27 +161,6 @@ func DecodeResetMCPRequest(encoded json.RawMessage) (ResetMCPRequest, []connecti
 	}, nil
 }
 
-// DecodeRetryApplicationRequest requires capability, name and saved revision.
-func DecodeRetryApplicationRequest(encoded json.RawMessage) (RetryApplicationRequest, []connection.ValidationIssue) {
-	revision, fields, valid := requestFields(encoded, "ns", "name")
-	if !valid {
-		return RetryApplicationRequest{}, invalidSettingsRequest()
-	}
-	namespace, issues := rpc.RequiredString(fields, "ns", true)
-	if len(issues) != 0 {
-		return RetryApplicationRequest{}, invalidSettingsRequest()
-	}
-	name, issues := rpc.RequiredString(fields, "name", true)
-	if len(issues) != 0 {
-		return RetryApplicationRequest{}, invalidSettingsRequest()
-	}
-	return RetryApplicationRequest{
-		NS:               namespace,
-		Name:             name,
-		ExpectedRevision: revision,
-	}, nil
-}
-
 // requestFields checks exact envelope members and a safe integer revision.
 func requestFields(encoded json.RawMessage, members ...string) (int64, map[string]json.RawMessage, bool) {
 	if !jsonvalue.IsObject(encoded) {

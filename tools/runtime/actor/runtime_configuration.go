@@ -6,17 +6,13 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorenx/goren/tools"
+	toolregistry "github.com/gorenx/goren/tools/registry"
 	catalogactor "github.com/gorenx/goren/tools/registry/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
 func (owner *Runtime) receiveConfiguration(gc *goakt.GrainContext) bool {
 	switch input := gc.Message().(type) {
-	case configurationNotice:
-		gc.Response(Completion{})
-		if input.creationID == owner.creationID {
-			owner.changed = true
-		}
 	case RefreshConfiguration:
 		if input.ID == "" ||
 			input.CreationID != owner.creationID ||
@@ -49,14 +45,13 @@ func (owner *Runtime) receiveConfiguration(gc *goakt.GrainContext) bool {
 		owner.request = current
 		owner.changed = false
 		owner.scheduler = nil
-		directory, err := catalogactor.NewClient(gc.ActorSystem(), owner.registry, owner.replyTimeout)
-		if err != nil {
-			owner.finish(current, err)
-			return true
-		}
 		instances := owner.newToolClient(gc)
 		owner.schedule(gc, current, func(ctx context.Context) error {
-			return owner.applyConfiguration(ctx, directory, instances)
+			applied, err := owner.collection.Snapshot()
+			if err != nil {
+				return err
+			}
+			return owner.applyCatalog(ctx, applied.Configuration, instances)
 		})
 	case CancelConfiguration:
 		if input.CreationID == owner.creationID &&
@@ -101,59 +96,19 @@ func (owner *Runtime) finishRefresh(gc *goakt.GrainContext, current *operation, 
 	})
 }
 
-// Watcher forwards scope-relevant invalidation only; it never merges or applies schemas.
-// Agent lifecycle owns this Actor and stops it before releasing the Runtime.
-type Watcher struct {
-	AgentID    string
-	CreationID string
-	Target     *goakt.GrainIdentity
-}
-
-type configurationNotice struct{ creationID string }
-
-// PreStart acquires no business resources.
-func (*Watcher) PreStart(*goakt.Context) error { return nil }
-
-// PostStop leaves PubSub membership cleanup to the framework's terminated-subscriber tracking.
-func (*Watcher) PostStop(*goakt.Context) error { return nil }
-
-// Receive subscribes once and forwards configuration facts to the exact Runtime lifetime.
-func (owner *Watcher) Receive(rc *goakt.ReceiveContext) {
-	switch input := rc.Message().(type) {
-	case *goakt.PostStart:
-		rc.Tell(rc.ActorSystem().TopicActor(), goakt.NewSubscribe(catalogactor.ConfigurationTopic))
-	case *goakt.SubscribeAck:
-		if input.Topic() == catalogactor.ConfigurationTopic {
-			owner.notify(rc)
-		}
-	case catalogactor.ConfigurationChanged:
-		if input.SessionID == "" || string(input.SessionID) == owner.AgentID {
-			owner.notify(rc)
-		}
-	}
-}
-
-func (owner *Watcher) notify(rc *goakt.ReceiveContext) {
-	call := rc.RequestGrain(owner.Target, configurationNotice{creationID: owner.CreationID})
-	if call == nil {
-		return
-	}
-	logger := rc.Logger()
-	call.Then(func(_ any, failure error) {
-		if failure != nil {
-			logger.Error(failure)
-		}
-	})
-}
-
-// applyConfiguration is shared by initialization and refresh. Registry is read
-// once; the same captured input drives MCP discovery and tool membership. The
-// caller retains the Runtime operation until all resource cleanup is confirmed.
+// applyConfiguration reads the initial Registry selection when no prepared
+// configuration was supplied. Later discovery refreshes reuse the applied
+// snapshot; they do not adopt Registry configuration changes.
 func (owner *Runtime) applyConfiguration(ctx context.Context, directory *catalogactor.Client, instances *toolClient) error {
 	configuration, err := directory.Read(ctx, owner.agentID)
 	if err != nil {
 		return err
 	}
+	return owner.applyCatalog(ctx, configuration, instances)
+}
+
+func (owner *Runtime) applyCatalog(ctx context.Context, configuration toolregistry.Configuration, instances *toolClient) error {
+	var err error
 	definitions := append(configuration.Global.MCP, configuration.Custom.MCP...)
 	if err := owner.connections.reconcile(ctx, definitions); err != nil {
 		return err

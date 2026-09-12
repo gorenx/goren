@@ -82,24 +82,17 @@ func describeSnapshot(projection settings.Snapshot) (DescribeValue, error) {
 		}
 		baseJSON := json.RawMessage(base)
 		userJSON := json.RawMessage(user)
-		application := projection.Applications[identifier]
-		failure := ""
-		if application.Error != "" {
-			failure = settings.ErrApplication.Error()
-		}
 		namespaces = append(namespaces, NamespaceView{
-			NS:              namespace,
-			Name:            identifier.Name,
-			Schema:          json.RawMessage(schema),
-			Value:           value,
-			Base:            &baseJSON,
-			User:            &userJSON,
-			Applies:         mode,
-			Secrets:         []SecretView{},
-			Revision:        projection.State.Version(identifier),
-			AppliedRevision: &application.AppliedRevision,
-			PendingRestart:  application.PendingRestart,
-			ApplyError:      failure,
+			PendingRestart: identifier.Section == settings.ProviderSection && projection.PendingRestart[identifier.Name],
+			NS:             namespace,
+			Name:           identifier.Name,
+			Schema:         json.RawMessage(schema),
+			Value:          value,
+			Base:           &baseJSON,
+			User:           &userJSON,
+			Applies:        mode,
+			Secrets:        []SecretView{},
+			Revision:       projection.State.Version(identifier),
 		})
 	}
 	return DescribeValue{
@@ -135,19 +128,19 @@ func groupValue(input settings.Directory, identifier settings.Group) any {
 func groupSchema(kind settings.Section) (string, string, ApplyMode) {
 	switch kind {
 	case settings.AgentSection:
-		return "agent", agentSchema, ApplyExplicit
+		return "agent", agentSchema, ApplyAgentRestart
 	case settings.CompanionSection:
 		return "companion", companionapi.ConfigSchema, ApplyNewInstance
 	case settings.ToolSection:
-		return "tool", toolSchema, ApplyLive
+		return "tool", toolSchema, ApplyAgentRestart
 	case settings.ProviderSection:
 		return "llmprovider", providerSchema, ApplyRestart
 	case settings.PromptSection:
-		return "prompt", promptSchema, ApplyLive
+		return "prompt", promptSchema, ApplyAgentRestart
 	case settings.MCPSection:
-		return "mcp", mcpSchema, ApplyLive
+		return "mcp", mcpSchema, ApplyAgentRestart
 	default:
-		return "", "{}", ApplyLive
+		return "", "{}", ApplyAgentRestart
 	}
 }
 

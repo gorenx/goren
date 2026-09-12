@@ -57,7 +57,7 @@ func TestCompanionSettingsHTTPPersistsAcrossServerRestart(t *testing.T) {
 			Configuration: "review-config",
 		},
 	})
-	if saved.NS != "companion" || saved.Applies != settingsapi.ApplyNewInstance || saved.Revision != 2 || saved.AppliedRevision == nil || *saved.AppliedRevision != 2 {
+	if saved.NS != "companion" || saved.Applies != settingsapi.ApplyNewInstance || saved.Revision != 2 {
 		t.Fatalf("incorrect adoption scope: %+v", saved)
 	}
 	if err := process.Close(ctx); err != nil {

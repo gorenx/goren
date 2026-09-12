@@ -276,7 +276,7 @@ func newStewardship(t *testing.T, prepare ...func(*stewardship) tool.Providers) 
 			t.Error(err)
 		}
 	})
-	fixture.creator.settings, err = stored.Bind(t.Context(), system, &configurationFixture{}, &configurationFixture{}, &configurationFixture{})
+	fixture.creator.settings, err = stored.Bind(t.Context(), system, &configurationFixture{}, &configurationFixture{})
 	if err != nil {
 		t.Fatal(err)
 	}

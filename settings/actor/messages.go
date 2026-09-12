@@ -64,17 +64,10 @@ type ResetMCP struct {
 	ExpectedRevision int64
 }
 
-// RetryApplication retries a saved group without another commit.
-type RetryApplication struct {
-	Context          context.Context
-	Group            settings.Group
-	ExpectedRevision int64
-}
-
 // Close stops new writes and waits for every admitted request to settle.
 type Close struct{}
 
-// Result carries the snapshot even when saving succeeded but application failed.
+// Result carries the latest completed snapshot, including after a rejected edit.
 type Result struct {
 	Snapshot settings.Snapshot
 	Err      error
@@ -128,11 +121,6 @@ func (input ResetMCP) apply(owner *settings.Service) (settings.Snapshot, error) 
 	return owner.ResetMCP(input.Context, input.Name, input.ExpectedRevision)
 }
 
-func (input RetryApplication) context() context.Context { return input.Context }
-func (input RetryApplication) apply(owner *settings.Service) (settings.Snapshot, error) {
-	return owner.RetryApplication(input.Context, input.Group, input.ExpectedRevision)
-}
-
 // UpdateTool replaces complete flags for one exposed tool.
 type UpdateTool struct {
 	Context          context.Context
@@ -181,4 +169,20 @@ func (input UpdateCompanion) apply(owner *settings.Service) (settings.Snapshot, 
 func (input ResetCompanion) context() context.Context { return input.Context }
 func (input ResetCompanion) apply(owner *settings.Service) (settings.Snapshot, error) {
 	return owner.ResetCompanion(input.Context, input.Name, input.ExpectedRevision)
+}
+
+// ChangedTopic carries saved configuration snapshots through GoAkt PubSub.
+// It is not a Session event and has no independent persistence or replay log.
+const ChangedTopic = "settings/changed"
+
+// ChangeNotice carries a saved configuration to lifecycle owners. Receiving a
+// notice does not mutate running components; Agent Registry replaces affected lifetimes.
+type ChangeNotice struct {
+	Revision      int64
+	configuration settings.Directory
+}
+
+// Configuration returns an isolated copy of the saved values.
+func (notice ChangeNotice) Configuration() settings.Directory {
+	return notice.configuration.Clone()
 }

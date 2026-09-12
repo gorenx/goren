@@ -331,3 +331,32 @@ func (owner *steward) restart(gc *goakt.GrainContext, input Restart) {
 		view: entry.view(),
 	})
 }
+
+// restartConfiguredChild uses the existing child closure and recovery flow.
+// An in-flight startup settles before closure; a repeated notice joins that work.
+func (owner *steward) restartConfiguredChild(gc *goakt.GrainContext, input agentregistry.RestartChild) {
+	if owner.state != active {
+		gc.Response(agentregistry.Completion{Err: agent.ErrClosing})
+		return
+	}
+	for _, entry := range owner.entries {
+		if entry.creation != input.Creation {
+			continue
+		}
+		if entry.relationship.Removed || !entry.relationship.Enabled {
+			gc.Response(agentregistry.Completion{})
+			return
+		}
+		if entry.closing == nil {
+			if entry.starting != nil {
+				entry.phase = Stopping
+			} else {
+				entry.failure = nil
+				owner.closeChild(gc, entry, false)
+			}
+		}
+		gc.Response(agentregistry.Completion{})
+		return
+	}
+	gc.Response(agentregistry.Completion{Err: agentregistry.ErrCreation})
+}

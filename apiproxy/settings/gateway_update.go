@@ -90,22 +90,6 @@ func (owner *Gateway) ResetMCP(ctx context.Context, call rpc.Request[ResetMCPReq
 	return updateOutcome("mcp", call.Payload.Name, call.Payload.ExpectedRevision, projection, err)
 }
 
-// RetryApplication forwards an application retry without rewriting user overrides.
-func (owner *Gateway) RetryApplication(ctx context.Context, call rpc.Request[RetryApplicationRequest]) (rpc.Outcome[NamespaceView], error) {
-	if owner.service == nil {
-		return absentSettings(), nil
-	}
-	section := businessSection(call.Payload.NS)
-	if section == 0 {
-		return rejectedUpdate(call.Payload.NS, connection.ErrorSettingsNotExposed, "Settings group is not exposed"), nil
-	}
-	projection, err := owner.service.RetryApplication(ctx, settings.Group{
-		Section: section,
-		Name:    call.Payload.Name,
-	}, call.Payload.ExpectedRevision)
-	return updateOutcome(call.Payload.NS, call.Payload.Name, call.Payload.ExpectedRevision, projection, err)
-}
-
 // updateOutcome maps owner results only; revision checks and persistence belong to Settings.
 func updateOutcome(namespace string, name string, expected int64, projection settings.Snapshot, failure error) (rpc.Outcome[NamespaceView], error) {
 	if errors.Is(failure, context.Canceled) || errors.Is(failure, context.DeadlineExceeded) {
@@ -128,7 +112,7 @@ func updateOutcome(namespace string, name string, expected int64, projection set
 			Actual:   actual,
 		})), nil
 	}
-	if failure != nil && !errors.Is(failure, settings.ErrApplication) {
+	if failure != nil {
 		message := "Settings operation failed"
 		if errors.Is(failure, settings.ErrUncertain) {
 			message = "Save outcome is uncertain; reload settings before retrying"

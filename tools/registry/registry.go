@@ -38,6 +38,8 @@ type Catalog struct {
 	// leave this false because they do not inherit other sources.
 	InheritGlobal bool
 	Schemas       []llm.ToolSchema
+	// Required names tools installed by the owning capability that user selection must retain.
+	Required []string
 	// MCP contains connection definitions. Each Runtime opens its own connections;
 	// Registry never stores live transports or discovered Provider identities here.
 	MCP []mcpclient.Config
@@ -82,33 +84,6 @@ type Registry struct {
 	// sessions maps a Session ID (e.g. "session-1") to its supplied catalog.
 	// Catalogs with InheritGlobal contain overrides; others are complete.
 	sessions map[session.SessionID]Catalog
-	// configured contains complete user flags accepted independently of source
-	// publication. It never owns Schema or execution-policy capabilities.
-	configured map[string]tools.Config
-}
-
-// ConfigureTool accepts a complete configuration for an existing tool. Schema,
-// Provider identity and execution-policy capabilities remain with their source.
-func (owner *Registry) ConfigureTool(name string, configuration tools.Config) error {
-	if !validName(name) {
-		return errors.New("tools: invalid configuration name")
-	}
-	found := false
-	for _, source := range owner.sources {
-		for _, entry := range source.Schemas {
-			if entry.Name == name {
-				found = true
-			}
-		}
-	}
-	if !found {
-		return errors.New("tools: configuration requires an existing tool")
-	}
-	if owner.configured == nil {
-		owner.configured = make(map[string]tools.Config)
-	}
-	owner.configured[name] = configuration.Clone()
-	return nil
 }
 
 // RegisterSource replaces a complete global source. Schema names cannot collide
@@ -220,39 +195,45 @@ func (owner *Registry) Read(identifier session.SessionID) Configuration {
 			},
 		}
 	}
+	combined := owner.Catalog()
+	if !configured {
+		selected.InheritGlobal = true
+	}
+	return Configuration{
+		Global: combined,
+		Custom: selected.Clone(),
+	}
+}
+
+// Catalog returns detached registered schemas, Provider bindings and source
+// policies. It excludes user flags and Session configuration, so a consumer can
+// apply a previously selected Settings snapshot without reading newer overrides.
+func (owner *Registry) Catalog() Catalog {
 	combined := Catalog{
 		Policies:    make(map[string]Policy),
 		ProviderIDs: make(map[string]tools.ProviderID),
 	}
 	for _, entries := range owner.sources {
 		combined.Schemas = append(combined.Schemas, entries.Schemas...)
+		combined.Required = append(combined.Required, entries.Required...)
 		combined.MCP = append(combined.MCP, entries.Clone().MCP...)
 		maps.Copy(combined.ProviderIDs, entries.ProviderIDs)
 		for name, policy := range entries.Policies {
 			combined.Policies[name] = policy
 		}
 	}
-	for _, entry := range combined.Schemas {
-		if configuration, present := owner.configured[entry.Name]; present {
-			enabled, visible := configuration.Resolve()
-			policy := combined.Policies[entry.Name]
-			policy.Enabled = &enabled
-			policy.Visible = &visible
-			combined.Policies[entry.Name] = policy
-		}
-	}
-	sort.Slice(combined.Schemas, func(left int, right int) bool { return combined.Schemas[left].Name < combined.Schemas[right].Name })
-	if !configured {
-		selected.InheritGlobal = true
-	}
-	return Configuration{
-		Global: combined.Clone(),
-		Custom: selected.Clone(),
-	}
+	sort.Slice(
+		combined.Schemas,
+		func(left int, right int) bool {
+			return combined.Schemas[left].Name < combined.Schemas[right].Name
+		},
+	)
+	return combined.Clone()
 }
 
 // Clone detaches schema bytes and optional values from caller mutation.
 func (input Catalog) Clone() Catalog {
+	input.Required = slices.Clone(input.Required)
 	input.MCP = slices.Clone(input.MCP)
 	for index := range input.MCP {
 		input.MCP[index].Args = slices.Clone(input.MCP[index].Args)
@@ -320,6 +301,16 @@ func snapshotCatalog(input Catalog) (Catalog, error) {
 		entry.Parameters = parameters
 		names[entry.Name] = true
 	}
+	required := make(map[string]struct{}, len(captured.Required))
+	for _, name := range captured.Required {
+		if !names[name] {
+			return Catalog{}, errors.New("tools: required tool must have an owned schema")
+		}
+		if _, exists := required[name]; exists {
+			return Catalog{}, errors.New("tools: duplicate required tool")
+		}
+		required[name] = struct{}{}
+	}
 	for name := range captured.Policies {
 		if !validName(name) {
 			return Catalog{}, fmt.Errorf("tools: invalid policy name %q", name)
@@ -373,4 +364,67 @@ func rejectSchemaConflicts(left, right Catalog) error {
 		}
 	}
 	return nil
+}
+
+// Select projects a complete tool selection onto registered capability definitions.
+// It retains required tools, Provider bindings and execution guards without writing
+// the selected flags or MCP connections back into the Registry.
+func (scoped Configuration) Select(
+	installed Catalog,
+	flags map[string]tools.Config,
+	connections []mcpclient.Config,
+) (Configuration, error) {
+	selected := installed.Clone()
+	if !scoped.Custom.InheritGlobal {
+		selected = Catalog{
+			Required:    slices.Clone(scoped.Global.Required),
+			Policies:    make(map[string]Policy),
+			ProviderIDs: make(map[string]tools.ProviderID),
+		}
+		names := slices.Clone(selected.Required)
+		for name := range flags {
+			if slices.Contains(selected.Required, name) {
+				return Configuration{}, fmt.Errorf("tools: tool %q is required by its capability", name)
+			}
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			source := scoped.Global
+			index := slices.IndexFunc(source.Schemas, func(entry llm.ToolSchema) bool { return entry.Name == name })
+			if index < 0 {
+				source = installed
+				index = slices.IndexFunc(source.Schemas, func(entry llm.ToolSchema) bool { return entry.Name == name })
+			}
+			if index < 0 {
+				if len(connections) != 0 {
+					continue
+				}
+				return Configuration{}, fmt.Errorf("tools: selected tool %q is not registered", name)
+			}
+			selected.Schemas = append(selected.Schemas, source.Schemas[index])
+			selected.Policies[name] = source.Policies[name]
+			if identifier := source.ProviderIDs[name]; identifier != "" {
+				selected.ProviderIDs[name] = identifier
+			}
+		}
+	}
+	selected.MCP = connections
+	if selected.Policies == nil {
+		selected.Policies = make(map[string]Policy)
+	}
+	for name, flags := range flags {
+		if slices.Contains(selected.Required, name) {
+			return Configuration{}, fmt.Errorf("tools: tool %q is required by its capability", name)
+		}
+		enabled, visible := flags.Resolve()
+		policy := selected.Policies[name]
+		policy.Enabled = &enabled
+		policy.Visible = &visible
+		selected.Policies[name] = policy
+	}
+	return Configuration{
+		Global: selected.Clone(),
+		Custom: scoped.Custom.Clone(),
+	}, nil
 }

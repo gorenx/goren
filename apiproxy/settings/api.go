@@ -12,19 +12,18 @@ import (
 
 // Settings methods share the Host privileged access boundary.
 const (
-	UpdateAgentMethod      = "settings.updateAgent"
-	UpdateCompanionMethod  = "settings.updateCompanion"
-	ResetCompanionMethod   = "settings.resetCompanion"
-	DescribeMethod         = "settings.describe"
-	UpdateToolMethod       = "settings.updateTool"
-	ResetToolMethod        = "settings.resetTool"
-	UpdateProviderMethod   = "settings.updateProvider"
-	UpdatePromptMethod     = "settings.updatePrompt"
-	UpdateMCPMethod        = "settings.updateMCP"
-	ResetProviderMethod    = "settings.resetProvider"
-	ResetPromptMethod      = "settings.resetPrompt"
-	ResetMCPMethod         = "settings.resetMCP"
-	RetryApplicationMethod = "settings.retryApplication"
+	UpdateAgentMethod     = "settings.updateAgent"
+	UpdateCompanionMethod = "settings.updateCompanion"
+	ResetCompanionMethod  = "settings.resetCompanion"
+	DescribeMethod        = "settings.describe"
+	UpdateToolMethod      = "settings.updateTool"
+	ResetToolMethod       = "settings.resetTool"
+	UpdateProviderMethod  = "settings.updateProvider"
+	UpdatePromptMethod    = "settings.updatePrompt"
+	UpdateMCPMethod       = "settings.updateMCP"
+	ResetProviderMethod   = "settings.resetProvider"
+	ResetPromptMethod     = "settings.resetPrompt"
+	ResetMCPMethod        = "settings.resetMCP"
 )
 
 // DescribeRequest is the empty settings.describe payload.
@@ -34,10 +33,9 @@ type DescribeRequest struct{}
 type ApplyMode string
 
 const (
-	ApplyExplicit    ApplyMode = "explicit"
-	ApplyNewInstance ApplyMode = "new_instance"
-	ApplyLive        ApplyMode = "live"
-	ApplyRestart     ApplyMode = "restart"
+	ApplyAgentRestart ApplyMode = "agent_restart"
+	ApplyNewInstance  ApplyMode = "new_instance"
+	ApplyRestart      ApplyMode = "restart"
 )
 
 // SecretView reports a redacted secret slot without its value.
@@ -48,18 +46,16 @@ type SecretView struct {
 
 // NamespaceView is one redacted Settings namespace snapshot.
 type NamespaceView struct {
-	NS              string           `json:"ns"`
-	Name            string           `json:"name"`
-	Schema          json.RawMessage  `json:"schema"`
-	Value           json.RawMessage  `json:"value"`
-	Base            *json.RawMessage `json:"base,omitempty"`
-	User            *json.RawMessage `json:"user,omitempty"`
-	Applies         ApplyMode        `json:"applies"`
-	Secrets         []SecretView     `json:"secrets"`
-	Revision        int64            `json:"revision"`
-	AppliedRevision *int64           `json:"appliedRevision,omitempty"`
-	PendingRestart  bool             `json:"pendingRestart,omitempty"`
-	ApplyError      string           `json:"applyError,omitempty"`
+	PendingRestart bool             `json:"pendingRestart,omitempty"`
+	NS             string           `json:"ns"`
+	Name           string           `json:"name"`
+	Schema         json.RawMessage  `json:"schema"`
+	Value          json.RawMessage  `json:"value"`
+	Base           *json.RawMessage `json:"base,omitempty"`
+	User           *json.RawMessage `json:"user,omitempty"`
+	Applies        ApplyMode        `json:"applies"`
+	Secrets        []SecretView     `json:"secrets"`
+	Revision       int64            `json:"revision"`
 }
 
 // DescribeValue is the complete browser-visible Settings catalog.
@@ -121,13 +117,6 @@ type ResetToolRequest struct {
 	ExpectedRevision int64  `json:"expectedRevision"`
 }
 
-// RetryApplicationRequest identifies one saved group to apply again.
-type RetryApplicationRequest struct {
-	NS               string `json:"ns"`
-	Name             string `json:"name"`
-	ExpectedRevision int64  `json:"expectedRevision"`
-}
-
 // API exposes the catalog and distinct Settings business operations.
 type API interface {
 	UpdateAgent(context.Context, rpc.Request[UpdateAgentRequest]) (rpc.Outcome[NamespaceView], error)
@@ -142,10 +131,9 @@ type API interface {
 	ResetProvider(context.Context, rpc.Request[ResetProviderRequest]) (rpc.Outcome[NamespaceView], error)
 	ResetPrompt(context.Context, rpc.Request[ResetPromptRequest]) (rpc.Outcome[NamespaceView], error)
 	ResetMCP(context.Context, rpc.Request[ResetMCPRequest]) (rpc.Outcome[NamespaceView], error)
-	RetryApplication(context.Context, rpc.Request[RetryApplicationRequest]) (rpc.Outcome[NamespaceView], error)
 }
 
-// Register installs the catalog, typed updates, resets and application retry endpoint.
+// Register installs the catalog, typed updates and resets.
 func Register(methods *rpc.Catalog, endpoint API) error {
 	if err := rpc.RegisterUnary(methods, UpdateAgentMethod, DecodeUpdateAgentRequest, endpoint.UpdateAgent); err != nil {
 		return err
@@ -183,7 +171,7 @@ func Register(methods *rpc.Catalog, endpoint API) error {
 	if err := rpc.RegisterUnary(methods, ResetToolMethod, DecodeResetToolRequest, endpoint.ResetTool); err != nil {
 		return err
 	}
-	return rpc.RegisterUnary(methods, RetryApplicationMethod, DecodeRetryApplicationRequest, endpoint.RetryApplication)
+	return nil
 }
 
 // UpdateCompanionRequest replaces one complete named configuration.

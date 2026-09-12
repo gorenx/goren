@@ -1,7 +1,6 @@
 package runtimeactor_test
 
 import (
-	"context"
 	"encoding/json"
 	"github.com/gorenx/goren/agentmessage"
 	"sync/atomic"
@@ -15,8 +14,6 @@ import (
 	catalogactor "github.com/gorenx/goren/tools/registry/actor"
 	runtimeactor "github.com/gorenx/goren/tools/runtime/actor"
 	"github.com/gorenx/goren/tools/tool"
-	goakt "github.com/tochemey/goakt/v4/actor"
-	"github.com/tochemey/goakt/v4/reentrancy"
 )
 
 type identifiedSource struct {
@@ -38,15 +35,12 @@ func (provider *dynamicSource) Provider(name string, expected tools.ProviderID) 
 	return selected, true
 }
 
-func TestRuntimeRebindsProviderWithoutChangingSchemaOrActorIdentity(t *testing.T) {
+func TestRuntimeRetainsProviderUntilClosed(t *testing.T) {
 	first := &identifiedSource{
 		id: "first",
 	}
 	second := &identifiedSource{
 		id: "second",
-	}
-	third := &identifiedSource{
-		id: "third",
 	}
 	dynamic := &dynamicSource{}
 	dynamic.current.Store(first)
@@ -78,14 +72,7 @@ func TestRuntimeRebindsProviderWithoutChangingSchemaOrActorIdentity(t *testing.T
 	}
 	publish(first.id)
 	target, closing := initializeRuntime(t, system, registry)
-	_, err = system.Spawn(context.Background(), "provider-watcher", &runtimeactor.Watcher{
-		AgentID:    "agent",
-		CreationID: "creation",
-		Target:     target,
-	}, goakt.WithReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))))
-	if err != nil {
-		t.Fatal(err)
-	}
+
 	address := ask[catalogactor.ToolAddress](t, system, registry, catalogactor.FindTool{
 		AgentID: "agent",
 		Name:    definition.Name,
@@ -145,60 +132,27 @@ func TestRuntimeRebindsProviderWithoutChangingSchemaOrActorIdentity(t *testing.T
 	}
 	dynamic.current.Store(second)
 	publish(second.id)
-	after := awaitProviderRefresh(t, func() runtimeactor.Definitions {
-		return refresh("replace")
-	}, func(result runtimeactor.Definitions) bool {
-		return result.Err != nil || second.opens.Load() != 0
-	})
-	if after.Err != nil ||
-		first.opens.Load() != 1 ||
-		first.closes.Load() != 1 ||
-		second.opens.Load() != 1 {
-		t.Fatalf("replacement=%+v first opens/closes=%d/%d second opens=%d", after, first.opens.Load(), first.closes.Load(), second.opens.Load())
+	after := refresh("registered-replacement")
+	if after.Err != nil || first.closes.Load() != 0 || second.opens.Load() != 0 {
+		t.Fatal("registration mutated a running lifetime")
 	}
-	run("replacement-call")
-	if before.Value.Schemas[0].Version != after.Value.Schemas[0].Version {
-		t.Fatal("Provider replacement changed model schema version")
-	}
+	run("original-binding")
 	current := ask[catalogactor.ToolAddress](t, system, registry, catalogactor.FindTool{
 		AgentID: "agent",
 		Name:    definition.Name,
 	})
 	if current.CreationID != address.CreationID || current.Actor.String() != address.Actor.String() {
-		t.Fatal("Provider replacement recreated ToolActor")
+		t.Fatal("registration replaced ToolActor")
 	}
-	if unchanged := refresh("unchanged"); unchanged.Err != nil || second.opens.Load() != 1 {
-		t.Fatalf("unchanged Provider was reopened: %+v", unchanged)
-	}
-	// The catalog is published before its matching constructor becomes visible.
-	// A refresh must reject the mismatch without opening the previous constructor.
-	publish(third.id)
-	failed := awaitProviderRefresh(t, func() runtimeactor.Definitions {
-		return refresh("mismatch")
-	}, func(result runtimeactor.Definitions) bool {
-		return result.Err != nil
-	})
-	if failed.Err == nil ||
-		second.opens.Load() != 1 ||
-		second.closes.Load() != 0 {
-		t.Fatalf("stale constructor: error=%v opens=%d closes=%d", failed.Err, second.opens.Load(), second.closes.Load())
-	}
-	dynamic.current.Store(third)
-	recovered := refresh("recover")
-	if recovered.Err != nil ||
-		third.opens.Load() != 1 ||
-		second.closes.Load() != 1 {
-		t.Fatalf("binding recovery=%+v opens=%d old closes=%d", recovered, third.opens.Load(), second.closes.Load())
-	}
-	run("recovered-call")
 	closed := ask[runtimeactor.Completion](t, system, target, closing)
-	if closed.Err != nil || third.closes.Load() != 1 {
-		t.Fatalf("close=%+v count=%d", closed, third.closes.Load())
+	if closed.Err != nil || first.closes.Load() != 1 {
+		t.Fatalf("close: %+v", closed)
 	}
+
 }
 
-// Registry publications reach the Runtime through an asynchronous scope notice.
-// Wait for observable application, without assuming publication is a mailbox barrier.
+// Wait for asynchronous MCP discovery without assuming a remote notification
+// has already been processed.
 func awaitProviderRefresh(t *testing.T, refresh func() runtimeactor.Definitions, ready func(runtimeactor.Definitions) bool) runtimeactor.Definitions {
 	t.Helper()
 	deadline := time.NewTimer(2 * time.Second)

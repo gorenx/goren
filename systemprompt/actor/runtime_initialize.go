@@ -75,7 +75,7 @@ func (owner *RuntimeGrain) initializeRuntime(gc *goakt.GrainContext, input Initi
 		owner.finishInitialization(operation, err)
 		return
 	}
-	if input.Config != nil {
+	if input.PromptRegistry == nil {
 		prepared, failure := preparePrompt(*input.Config)
 		completed <- promptPrepared{
 			operation: operation,
@@ -113,6 +113,20 @@ func (owner *RuntimeGrain) initializeTools(gc *goakt.GrainContext, input promptP
 	if input.err != nil {
 		owner.finishInitialization(operation, input.err)
 		return
+	}
+	if operation.input.Config != nil {
+		validated, err := systemprompt.ValidateConfig(*operation.input.Config)
+		if err != nil {
+			owner.finishInitialization(operation, err)
+			return
+		}
+		captured, err := input.result.Snapshot.WithConfiguration(validated.Configuration())
+		if err != nil {
+			owner.finishInitialization(operation, err)
+			return
+		}
+		input.result.Snapshot = captured
+		input.result.Config = validated.Configuration()
 	}
 	layer := systemprompt.DeriveLayer(input.result.Snapshot)
 	for _, section := range operation.input.Sections {
@@ -154,9 +168,6 @@ func (owner *RuntimeGrain) initializeTools(gc *goakt.GrainContext, input promptP
 				owner.runtime = candidate
 				owner.layer = layer
 				owner.registry = operation.input.PromptRegistry
-				if operation.input.Config != nil {
-					owner.registry = nil
-				}
 				owner.settings = input.result.Config.Clone()
 				owner.sections = operation.input.Sections
 				owner.version = input.result.Version

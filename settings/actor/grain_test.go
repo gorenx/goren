@@ -9,18 +9,16 @@ import (
 
 	"github.com/gorenx/goren/mcpclient"
 	"github.com/gorenx/goren/settings"
-	"github.com/gorenx/goren/systemprompt"
-	"github.com/gorenx/goren/tools"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/log"
 )
 
-type promptFixture struct {
+type validationFixture struct {
 	entered chan struct{}
 	release chan struct{}
 }
 
-func (fixture *promptFixture) ApplyPrompt(ctx context.Context, _ string, _ systemprompt.Config) error {
+func (fixture *validationFixture) ValidateMCP(ctx context.Context, _ []mcpclient.Config) error {
 	select {
 	case fixture.entered <- struct{}{}:
 	default:
@@ -37,12 +35,10 @@ type connectionFixture struct{}
 
 func (*connectionFixture) ValidateMCP(context.Context, []mcpclient.Config) error { return nil }
 
-func (*connectionFixture) ApplyMCP(context.Context, []mcpclient.Config) error { return nil }
-
 func TestGrainKeepsQueriesResponsiveAndSerializesConditionalEdits(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	running, err := goakt.NewActorSystem("settings-test", goakt.WithLogger(log.DiscardLogger))
+	running, err := goakt.NewActorSystem("settings-test", goakt.WithLogger(log.DiscardLogger), goakt.WithPubSub())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +57,7 @@ func TestGrainKeepsQueriesResponsiveAndSerializesConditionalEdits(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer installed.Close(context.Background())
-	prompts := &promptFixture{
+	validation := &validationFixture{
 		entered: make(chan struct{}, 1),
 		release: make(chan struct{}),
 	}
@@ -72,35 +68,43 @@ func TestGrainKeepsQueriesResponsiveAndSerializesConditionalEdits(t *testing.T) 
 	if _, err := endpoint.Describe(ctx); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("unbound client did not report unavailable: %v", err)
 	}
-	_, err = installed.Bind(ctx, running, prompts, &connectionFixture{}, &connectionFixture{})
+	_, err = installed.Bind(ctx, running, validation, &connectionFixture{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	failures := make(chan error, 2)
 	go func() {
-		persona := "first"
-		_, err := endpoint.UpdatePrompt(ctx, "default", 0, settings.PromptConfig{
-			Persona: &persona,
+		_, err := endpoint.UpdateMCP(ctx, "gated", 0, settings.MCPConfig{
+			Enabled: true,
+			Connection: mcpclient.Config{
+				ServerName: "gated",
+				Transport:  "streamable-http",
+				URL:        "https://first.example.test",
+			},
 		})
 		failures <- err
 	}()
 	select {
-	case <-prompts.entered:
+	case <-validation.entered:
 	case <-ctx.Done():
-		t.Fatal("configuration application never started")
+		t.Fatal("configuration validation never started")
 	}
 	view, err := endpoint.Describe(ctx)
 	if err != nil || view.State.Revision != 0 {
 		t.Fatalf("in-flight read did not preserve last completed view: %#v %v", view, err)
 	}
 	go func() {
-		persona := "second"
-		_, err := endpoint.UpdatePrompt(ctx, "default", 0, settings.PromptConfig{
-			Persona: &persona,
+		_, err := endpoint.UpdateMCP(ctx, "gated", 0, settings.MCPConfig{
+			Enabled: true,
+			Connection: mcpclient.Config{
+				ServerName: "gated",
+				Transport:  "streamable-http",
+				URL:        "https://second.example.test",
+			},
 		})
 		failures <- err
 	}()
-	close(prompts.release)
+	close(validation.release)
 	conflicts := 0
 	for range 2 {
 		select {
@@ -119,7 +123,7 @@ func TestGrainKeepsQueriesResponsiveAndSerializesConditionalEdits(t *testing.T) 
 	}
 	// Client forwards complete replacements and full resets through the same owner.
 	disabled := false
-	view, err = endpoint.UpdatePrompt(ctx, "default", 1, settings.PromptConfig{
+	view, err = endpoint.UpdatePrompt(ctx, "default", 0, settings.PromptConfig{
 		IncludeHarnessIdentity: &disabled,
 	})
 	if err != nil || view.State.User.Prompts["default"].Persona != nil {
@@ -152,7 +156,7 @@ func TestGrainKeepsQueriesResponsiveAndSerializesConditionalEdits(t *testing.T) 
 		t.Fatal(err)
 	}
 	view, err = endpoint.ResetMCP(ctx, "named", view.State.Version(actorGroup(settings.MCPSection, "named")))
-	if err != nil || len(view.State.User.MCP) != 0 {
+	if err != nil || view.State.User.Has(actorGroup(settings.MCPSection, "named")) {
 		t.Fatalf("Actor MCP reset failed: %#v %v", view, err)
 	}
 	if err := installed.Close(ctx); err != nil {
@@ -176,13 +180,12 @@ func actorGroup(kind settings.Section, name string) settings.Group {
 	}
 }
 
-func (*connectionFixture) ValidateTool(context.Context, string) error            { return nil }
-func (*connectionFixture) ApplyTool(context.Context, string, tools.Config) error { return nil }
+func (*connectionFixture) ValidateTool(context.Context, string) error { return nil }
 
 func TestProviderCloseTimeoutRetainsStoreUntilAcceptedEditDrains(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 8*time.Second)
 	defer cancel()
-	running, err := goakt.NewActorSystem("settings-close-test", goakt.WithLogger(log.DiscardLogger))
+	running, err := goakt.NewActorSystem("settings-close-test", goakt.WithLogger(log.DiscardLogger), goakt.WithPubSub())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,33 +204,37 @@ func TestProviderCloseTimeoutRetainsStoreUntilAcceptedEditDrains(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer installed.Close(context.Background())
-	prompts := &promptFixture{
+	validation := &validationFixture{
 		entered: make(chan struct{}, 1),
 		release: make(chan struct{}),
 	}
 	defer func() {
 		select {
-		case <-prompts.release:
+		case <-validation.release:
 		default:
-			close(prompts.release)
+			close(validation.release)
 		}
 	}()
-	endpoint, err := installed.Bind(ctx, running, prompts, &connectionFixture{}, &connectionFixture{})
+	endpoint, err := installed.Bind(ctx, running, validation, &connectionFixture{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	finished := make(chan error, 1)
 	go func() {
-		persona := "accepted edit"
-		_, err := endpoint.UpdatePrompt(ctx, "default", 0, settings.PromptConfig{
-			Persona: &persona,
+		_, err := endpoint.UpdateMCP(ctx, "gated", 0, settings.MCPConfig{
+			Enabled: true,
+			Connection: mcpclient.Config{
+				ServerName: "gated",
+				Transport:  "streamable-http",
+				URL:        "https://accepted-edit.example.test",
+			},
 		})
 		finished <- err
 	}()
 	select {
-	case <-prompts.entered:
+	case <-validation.entered:
 	case <-ctx.Done():
-		t.Fatal("application did not start")
+		t.Fatal("validation did not start")
 	}
 	bounded, stop := context.WithTimeout(ctx, 100*time.Millisecond)
 	err = installed.Close(bounded)
@@ -238,10 +245,10 @@ func TestProviderCloseTimeoutRetainsStoreUntilAcceptedEditDrains(t *testing.T) {
 	if _, err := installed.storage.Load(ctx); err != nil {
 		t.Fatalf("store closed while an accepted edit was applying: %v", err)
 	}
-	if _, err := endpoint.UpdatePrompt(ctx, "default", 1, settings.PromptConfig{}); !errors.Is(err, ErrUnavailable) {
+	if _, err := endpoint.UpdatePrompt(ctx, "default", 0, settings.PromptConfig{}); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("closing provider accepted a new edit: %v", err)
 	}
-	close(prompts.release)
+	close(validation.release)
 	select {
 	case err := <-finished:
 		if err != nil {
@@ -258,8 +265,7 @@ func TestProviderCloseTimeoutRetainsStoreUntilAcceptedEditDrains(t *testing.T) {
 	}
 	resolved, err := Inspect(ctx, path, baseline)
 	if err != nil ||
-		resolved.Prompts["default"].Persona == nil ||
-		*resolved.Prompts["default"].Persona != "accepted edit" {
+		resolved.MCP["gated"].Connection.URL != "https://accepted-edit.example.test" {
 		t.Fatalf("accepted edit did not survive close and reopen: %v", err)
 	}
 }

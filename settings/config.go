@@ -1,5 +1,5 @@
 // Package settings owns user configuration overrides, conditional persistence,
-// and application status. Runtime resources remain with their capability owners.
+// and persistence. Runtime resources remain with their capability owners.
 package settings
 
 import (

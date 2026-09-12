@@ -8,7 +8,8 @@ import (
 
 // InitializeRuntime asks the Runtime to obtain its definitions from their owners.
 type InitializeRuntime struct {
-	// Config selects an independent baseline; nil follows the shared Registry.
+	// Config selects the initial baseline independently of the definition source.
+	// Nil uses the Registry baseline for initialization.
 	Config  *systemprompt.Config
 	AgentID session.SessionID
 	// PromptRegistry owns registered prompt sections, contexts and variables.
@@ -24,7 +25,7 @@ type InitializeRuntime struct {
 }
 
 // ApplyTools installs a committed tool view without switching shared prompt definitions.
-// Subscription delivery is independent of the Turn configuration boundary.
+// The baseline selected at initialization is retained.
 type ApplyTools struct {
 	AgentID     session.SessionID
 	Definitions systemprompt.ToolDefinitions
@@ -33,9 +34,6 @@ type ApplyTools struct {
 // ApplyConfiguration installs the acknowledged tools and refreshes shared prompt
 // definitions at a Turn boundary. Local sections and active snapshots are retained.
 type ApplyConfiguration struct {
-	// Config replaces the baseline with an independent complete configuration.
-	// Nil keeps the current selection, refreshing shared definitions only when used.
-	Config  *systemprompt.Config
 	AgentID session.SessionID
 
 	Definitions systemprompt.ToolDefinitions

@@ -132,7 +132,7 @@ func initializeRuntime(t *testing.T, system goakt.ActorSystem, registry *goakt.G
 	}
 }
 
-func TestRuntimePreservesHiddenToolAndRetriesFailedClose(t *testing.T) {
+func TestRuntimeRetainsFlagsAndRetriesFailedClose(t *testing.T) {
 	provider := &source{}
 	system, target, registry, closing := startRuntime(t, provider)
 	route := ask[catalogactor.ToolAddress](t, system, registry, catalogactor.FindTool{
@@ -161,11 +161,11 @@ func TestRuntimePreservesHiddenToolAndRetriesFailedClose(t *testing.T) {
 		CreationID: "creation",
 		ID:         "hide",
 	})
-	if updated.Err != nil || len(updated.Value.Schemas) != 0 || len(updated.Value.KnownNames) != 1 {
+	if updated.Err != nil || len(updated.Value.Schemas) != 1 || len(updated.Value.KnownNames) != 1 {
 		t.Fatalf("updated: %+v", updated)
 	}
 	if provider.opens.Load() != 1 || provider.closes.Load() != 0 {
-		t.Fatal("visibility change reopened implementation")
+		t.Fatal("registration changed a running implementation")
 	}
 	provider.closeFailure.Store(true)
 	closed := ask[runtimeactor.Completion](t, system, target, closing)

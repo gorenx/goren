@@ -49,12 +49,13 @@ func newInstallation(
 	}
 	tools := &toolsClient{
 		command: runtimeactor.InitializeRuntime{
-			AgentID:    input.Creation.AgentID,
-			CreationID: input.Creation.CreationID,
-			Authority:  authority,
-			Registry:   input.ToolsRegistry,
-			Config:     input.Tools,
-			Timeout:    input.Timeout,
+			Configuration: input.configuration,
+			AgentID:       input.Creation.AgentID,
+			CreationID:    input.Creation.CreationID,
+			Authority:     authority,
+			Registry:      input.ToolsRegistry,
+			Config:        input.Tools,
+			Timeout:       input.Timeout,
 		}}
 	prompt := &promptClient{
 		tools: tools,

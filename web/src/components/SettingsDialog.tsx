@@ -71,7 +71,7 @@ export function SettingsDialog({ onClose, onCredentialChanged }: { onClose: () =
     }
   }
 
-  const write = async (operation: 'update' | 'reset' | 'retry'): Promise<void> => {
+  const write = async (operation: 'update' | 'reset'): Promise<void> => {
     if (selected === undefined || pending.current || !catalog?.writable) return
     pending.current = true
     setBusy(true)
@@ -83,10 +83,8 @@ export function SettingsDialog({ onClose, onCredentialChanged }: { onClose: () =
     if (selected.ns === 'prompt' && Array.isArray(complete.toolOrder)) complete.toolOrder = complete.toolOrder.filter(line => line !== '')
     if (selected.ns === 'llmprovider' && isRecord(complete.retryPolicy) && Array.isArray(complete.retryPolicy.retryableCodes)) complete.retryPolicy.retryableCodes = complete.retryPolicy.retryableCodes.filter(line => line !== '')
     const config = selected.ns === 'mcp' ? { ...draft, connection: { ...(draft.connection as SettingsValue), serverName: name, transport: 'streamable-http' } } : complete
-    const method = operation === 'retry' ? 'settings.retryApplication' : settingsMethods[selected.ns][operation]
-    const payload = operation === 'retry'
-      ? { ns: selected.ns, name, expectedRevision: selected.revision }
-      : operation === 'update' ? { name, expectedRevision: selected.revision, config } : { name, expectedRevision: selected.revision }
+    const method = settingsMethods[selected.ns][operation]
+    const payload = operation === 'update' ? { name, expectedRevision: selected.revision, config } : { name, expectedRevision: selected.revision }
     try {
       const result = decodeSettingsGroup(await api.call(method, payload, signal))
       if (signal?.aborted) return
@@ -103,7 +101,7 @@ export function SettingsDialog({ onClose, onCredentialChanged }: { onClose: () =
   }
 
   const createMCP = (): void => {
-    select({ ns: 'mcp', name: 'new', revision: 0, applies: 'live', value: { enabled: true, connection: { transport: 'streamable-http', url: '' } } })
+    select({ ns: 'mcp', name: 'new', revision: 0, applies: 'agent_restart', value: { enabled: true, connection: { transport: 'streamable-http', url: '' } } })
     setCreating(true)
     setNewName('')
   }
@@ -137,8 +135,6 @@ export function SettingsDialog({ onClose, onCredentialChanged }: { onClose: () =
             <h3>{translate(settingsLabels[selected.ns])} / {creating ? translate('settings.newGroup') : selected.name}</h3>
             {!creating && <p className="settings-help">{translate(selected.user == null ? 'settings.inherited' : 'settings.overridden')}</p>}
             {selected.pendingRestart && <p className="settings-status" role="status">{translate('settings.pendingRestart')}</p>}
-            {selected.applyError && <p className="settings-error" role="status">{translate('settings.applyFailure')}</p>}
-            {saved && !selected.pendingRestart && !selected.applyError && <p className="settings-status" role="status">{translate('settings.saved')}</p>}
             <form onSubmit={event => { event.preventDefault(); void write('update') }}>
               <fieldset disabled={busy || !catalog?.writable}>
                 {creating && <label className="settings-field" htmlFor="settings-new-name">{translate('mcp.name')}<input id="settings-new-name" className="credential-input" required autoComplete="off" value={newName} onChange={event => { setNewName(event.target.value); setDirty(true) }} /></label>}
@@ -152,7 +148,6 @@ export function SettingsDialog({ onClose, onCredentialChanged }: { onClose: () =
             </form>
             <div className="settings-actions settings-secondary-actions">
               {!creating && selected.user != null && <button type="button" className="credential-remove" disabled={busy || dirty || !catalog?.writable || failure === 'conflict'} onClick={() => void write('reset')}>{translate('settings.reset')}</button>}
-              {selected.applyError && <button type="button" className="credential-cancel" disabled={busy || dirty || !catalog?.writable || failure === 'conflict'} onClick={() => void write('retry')}>{translate('settings.retry')}</button>}
               {(dirty || creating) && <button type="button" className="credential-cancel" disabled={busy} onClick={() => select(creating ? catalog?.namespaces[0] : selected)}>{translate('settings.discard')}</button>}
             </div>
             {!creating && <details className="settings-advanced"><summary>{translate('settings.sources')}</summary><h4>{translate('settings.local')}</h4><pre>{JSON.stringify(selected.base ?? null, null, 2)}</pre><h4>{translate('settings.user')}</h4><pre>{JSON.stringify(selected.user ?? null, null, 2)}</pre></details>}

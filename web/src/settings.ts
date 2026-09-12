@@ -10,11 +10,9 @@ export interface SettingsGroup {
   value: SettingsValue | null
   base?: SettingsValue | null
   user?: SettingsValue | null
-  revision: number
-  appliedRevision?: number
   pendingRestart?: boolean
-  applyError?: string
-  applies: 'live' | 'restart'
+  revision: number
+  applies: 'agent_restart' | 'restart'
 }
 
 export interface SettingsCatalog {
@@ -46,12 +44,10 @@ export function decodeSettingsGroup(raw: unknown): SettingsGroup {
     || typeof raw.name !== 'string' || raw.name.length === 0
     || typeof raw.revision !== 'number' || !Number.isSafeInteger(raw.revision) || raw.revision < 0
     || (raw.value !== null && !isRecord(raw.value))
-    || (raw.applies !== 'live' && raw.applies !== 'restart')
+    || (raw.applies !== 'agent_restart' && raw.applies !== 'restart')
     || (raw.base !== undefined && raw.base !== null && !isRecord(raw.base))
-    || (raw.user !== undefined && raw.user !== null && !isRecord(raw.user))
-    || (raw.appliedRevision !== undefined && (typeof raw.appliedRevision !== 'number' || !Number.isSafeInteger(raw.appliedRevision)))
     || (raw.pendingRestart !== undefined && typeof raw.pendingRestart !== 'boolean')
-    || (raw.applyError !== undefined && typeof raw.applyError !== 'string')) throw new Error('Invalid settings group')
+    || (raw.user !== undefined && raw.user !== null && !isRecord(raw.user))) throw new Error('Invalid settings group')
   return raw as unknown as SettingsGroup
 }
 

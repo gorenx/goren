@@ -80,22 +80,28 @@ func (owner *Creator) Start(
 		return agentregistry.Ready{}, err
 	}
 	prompt := initial.Prompts["default"].Prompt()
+	var manager *goakt.GrainIdentity
 	components := make([]*goakt.GrainIdentity, 0, len(current.Components))
 	for _, entry := range current.Components {
+		if entry.Owner.Name() == InstallerName {
+			manager = entry.Runtime
+		}
 		if entry.Owner.Name() != InstallerName {
 			components = append(components, entry.Owner)
 		}
 	}
 	input := agentregistry.CreateChildAgent{
-		Role:           agent.CompanionRole,
-		Parent:         parent,
-		Child:          child,
-		Restore:        stored != nil,
-		AgentOptions:   &initial.Model,
-		Prompt:         &prompt,
-		Tools:          &selection,
-		PromptSections: []systemprompt.PromptSection{report.Section()},
-		Components:     components,
+		Manager:           manager,
+		ConfigurationName: configuration,
+		Role:              agent.CompanionRole,
+		Parent:            parent,
+		Child:             child,
+		Restore:           stored != nil,
+		AgentOptions:      &initial.Model,
+		Prompt:            &prompt,
+		Tools:             &selection,
+		PromptSections:    []systemprompt.PromptSection{report.Section()},
+		Components:        components,
 	}
 	if !input.Restore {
 		input.Options.Metadata.Origin = session.OriginSubagent
@@ -121,7 +127,7 @@ func (owner *Creator) selectTools(
 	parent agentregistry.Creation,
 	initial settings.Values,
 ) (toolregistry.Catalog, error) {
-	available, err := ask[catalogactor.Configuration](ctx, owner.System, owner.Tools, catalogactor.ReadConfiguration{})
+	available, err := ask[toolregistry.Catalog](ctx, owner.System, owner.Tools, catalogactor.ReadCatalog{})
 	if err != nil {
 		return toolregistry.Catalog{}, err
 	}
@@ -133,6 +139,7 @@ func (owner *Creator) selectTools(
 	}
 	selected := toolregistry.Catalog{
 		Schemas:     []llm.ToolSchema{report.Schema()},
+		Required:    []string{report.Schema().Name},
 		MCP:         initial.MCPConnections(),
 		Policies:    make(map[string]toolregistry.Policy),
 		ProviderIDs: make(map[string]tools.ProviderID),
@@ -157,7 +164,7 @@ func (owner *Creator) selectTools(
 			})
 		}
 		if index < 0 {
-			source = available.Value.Global
+			source = available
 			index = slices.IndexFunc(source.Schemas, func(entry llm.ToolSchema) bool {
 				return entry.Name == name
 			})

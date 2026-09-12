@@ -67,16 +67,15 @@ func (owner *Provider) Target() settings.Directory { return owner.target.Clone()
 // Bind publishes the service after the composition root applies Target.
 func (owner *Provider) Bind(ctx context.Context,
 	running goakt.ActorSystem,
-	prompts settings.PromptUpdater,
-	connections settings.MCPUpdater,
-	toolsets settings.ToolUpdater,
+	connections settings.MCPValidator,
+	toolsets settings.ToolValidator,
 ) (*Client, error) {
 	if owner.client != nil ||
 		owner.storage == nil ||
-		running == nil {
+		running == nil || running.TopicActor() == nil {
 		return nil, ErrUnavailable
 	}
-	business, err := settings.NewService(owner.baseline, owner.stored, owner.storage, prompts, connections, toolsets)
+	business, err := settings.NewService(owner.baseline, owner.stored, owner.storage, connections, toolsets)
 	if err != nil {
 		return nil, err
 	}
@@ -86,14 +85,6 @@ func (owner *Provider) Bind(ctx context.Context,
 			continue
 		}
 		if err := toolsets.ValidateTool(ctx, identifier.Name); err != nil {
-			return nil, err
-		}
-	}
-	for _, identifier := range groups {
-		if identifier.Section != settings.ToolSection {
-			continue
-		}
-		if err := toolsets.ApplyTool(ctx, identifier.Name, owner.target.Tools[identifier.Name]); err != nil {
 			return nil, err
 		}
 	}

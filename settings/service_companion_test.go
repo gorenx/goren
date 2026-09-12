@@ -21,10 +21,9 @@ func TestCompanionDirectoryReplacementResetAndIsolation(t *testing.T) {
 		},
 	}
 	storage := &memoryStore{}
-	prompts := &promptRecorder{}
 	connections := &connectionRecorder{}
 	toolsets := &toolRecorder{}
-	owner, err := NewService(baseline, State{}, storage, prompts, connections, toolsets)
+	owner, err := NewService(baseline, State{}, storage, connections, toolsets)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +38,7 @@ func TestCompanionDirectoryReplacementResetAndIsolation(t *testing.T) {
 	if view.Target.Companions["reviewer"].Enabled || view.Target.Companions["reviewer"].Configuration != "" {
 		t.Fatal("replacement inherited omitted local values")
 	}
-	if view.Applications[identifier].AppliedRevision != 1 {
+	if view.State.Version(identifier) != 1 {
 		t.Fatal("directory revision not adopted")
 	}
 	view, err = owner.ResetCompanion(t.Context(), "reviewer", 1)
@@ -59,24 +58,17 @@ func TestCompanionDirectoryReplacementResetAndIsolation(t *testing.T) {
 	}); !errors.Is(err, ErrInvalid) {
 		t.Fatal("partial tool inheritance accepted")
 	}
-	if _, err := owner.RetryApplication(t.Context(), identifier, 2); err != nil {
-		t.Fatal(err)
-	}
-	if prompts.calls != 0 || connections.calls != 0 || toolsets.calls != 0 {
-		t.Fatal("directory mutation applied configuration to running owners")
-	}
 	if storage.stored.Revision != 2 {
-		t.Fatal("rejected edit or retry wrote a revision")
+		t.Fatal("rejected edit wrote a revision")
 	}
 }
 
 func TestNamedAgentValuesAreIndependentAndUseExistingSettingsTransaction(t *testing.T) {
 	baseline := exampleBaseline()
 	storage := &memoryStore{}
-	prompts := &promptRecorder{}
 	connections := &connectionRecorder{}
 	toolsets := &toolRecorder{}
-	owner, err := NewService(baseline, State{}, storage, prompts, connections, toolsets)
+	owner, err := NewService(baseline, State{}, storage, connections, toolsets)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +132,7 @@ func TestNamedAgentValuesAreIndependentAndUseExistingSettingsTransaction(t *test
 	if len(replaced.Target.Agents["review-config"].Prompts) != 0 || len(replaced.Target.Agents["review-config"].MCP) != 0 {
 		t.Fatal("complete replacement merged previous values")
 	}
-	if !reflect.DeepEqual(replaced.Target.Values, baseline.Values.Clone()) || prompts.calls != 0 || connections.calls != 0 || toolsets.calls != 0 {
+	if !reflect.DeepEqual(replaced.Target.Values, baseline.Values.Clone()) {
 		t.Fatal("named configuration changed process defaults or running resources")
 	}
 	if storage.stored.Revision != 3 {

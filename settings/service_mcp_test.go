@@ -28,7 +28,7 @@ func TestServiceMCPReplacesNamedGroupsAndRestoresInheritance(t *testing.T) {
 	baseline.MCP["other"] = namedMCP("other", "https://other.example.test")
 	storage := &memoryStore{}
 	connections := &connectionRecorder{}
-	owner, err := NewService(baseline, State{}, storage, &promptRecorder{}, connections, &toolRecorder{})
+	owner, err := NewService(baseline, State{}, storage, connections, &toolRecorder{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,8 +43,8 @@ func TestServiceMCPReplacesNamedGroupsAndRestoresInheritance(t *testing.T) {
 		view.State.Version(mcpGroup("other")) != 0 {
 		t.Fatal("replacement inherited old fields or changed another group")
 	}
-	if len(connections.definitions) != 2 || connections.definitions[0].ServerName != "other" {
-		t.Fatal("application did not receive the complete sorted target")
+	if len(view.Target.MCPConnections()) != 2 || view.Target.MCPConnections()[0].ServerName != "other" {
+		t.Fatal("snapshot omitted the complete sorted target")
 	}
 
 	other := namedMCP("other", "https://changed.example.test")
@@ -56,7 +56,7 @@ func TestServiceMCPReplacesNamedGroupsAndRestoresInheritance(t *testing.T) {
 	replacement.Enabled = false
 	view, err = owner.UpdateMCP(t.Context(), "testa", 1, replacement)
 	if err != nil ||
-		len(connections.definitions) != 1 ||
+		len(view.Target.MCPConnections()) != 1 ||
 		view.Target.MCP["testa"].Enabled {
 		t.Fatalf("disable named connection: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestServiceMCPReplacesNamedGroupsAndRestoresInheritance(t *testing.T) {
 
 func TestServiceMCPRejectsIncompleteReplacementWithoutSaving(t *testing.T) {
 	storage := &memoryStore{}
-	owner, err := NewService(exampleBaseline(), State{}, storage, &promptRecorder{}, &connectionRecorder{}, &toolRecorder{})
+	owner, err := NewService(exampleBaseline(), State{}, storage, &connectionRecorder{}, &toolRecorder{})
 	if err != nil {
 		t.Fatal(err)
 	}

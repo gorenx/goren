@@ -42,14 +42,23 @@ type Grain struct {
 	// creations maps Agent IDs to their latest reservation and close progress.
 	// Completed entries retain an idempotent close result until the next creation.
 	// Parent Agent IDs live in the business directory.
-	creations map[session.SessionID]reservation
+	creations   map[session.SessionID]reservation
+	preferences *configuration
+	observer    *goakt.PID
+	restarts    map[session.SessionID]*restart
 }
 
 // OnActivate begins without admitting previous process-local creations.
 func (*Grain) OnActivate(context.Context, *goakt.GrainProps) error { return nil }
 
 // OnDeactivate discards admission state, never asserting resource shutdown.
-func (owner *Grain) OnDeactivate(context.Context, *goakt.GrainProps) error {
+func (owner *Grain) OnDeactivate(ctx context.Context, _ *goakt.GrainProps) error {
+	if owner.observer != nil {
+		if err := owner.observer.Shutdown(ctx); err != nil {
+			return err
+		}
+		owner.observer = nil
+	}
 	for _, entry := range owner.creations {
 		if entry.activation != nil {
 			if entry.activation.cancel != nil {
@@ -63,6 +72,7 @@ func (owner *Grain) OnDeactivate(context.Context, *goakt.GrainProps) error {
 			entry.closure.respond(errors.New("agent registry: stopped during close"))
 		}
 	}
+	owner.cancelRestarts("")
 	owner.directory = agent.Registry{}
 	owner.creations = nil
 	return nil
@@ -75,7 +85,7 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 		result.deliver(gc)
 		return
 	}
-	if owner.receiveLifecycle(gc) ||
+	if owner.receiveConfiguration(gc) || owner.receiveLifecycle(gc) ||
 		owner.receiveIdentity(gc) ||
 		owner.receiveAdmission(gc) {
 		return
@@ -202,7 +212,11 @@ func (owner *Grain) claim(input agentactor.Claim) error {
 		return err
 	}
 	current := owner.creations[input.AgentID]
-	if input.InstanceID == "" || input.Executor == nil || input.Executor.Name() != loopactor.RuntimeName(string(input.AgentID)) || current.instanceID != "" && current.instanceID != input.InstanceID || current.executor != nil && !current.executor.Equal(input.Executor) {
+	if input.InstanceID == "" ||
+		input.Executor == nil ||
+		input.Executor.Name() != loopactor.RuntimeName(string(input.AgentID)) ||
+		current.instanceID != "" && current.instanceID != input.InstanceID ||
+		current.executor != nil && !current.executor.Equal(input.Executor) {
 		return ErrInstance
 	}
 	for _, kind := range []agent.ResourceKind{agent.Work, agent.Execution, agent.Activation} {
@@ -231,6 +245,7 @@ func (owner *Grain) claim(input agentactor.Claim) error {
 func (owner *Grain) receiveAdmission(gc *goakt.GrainContext) bool {
 	switch input := gc.Message().(type) {
 	case StopAdmission:
+		owner.cancelRestarts("")
 		owner.directory.StopAdmission()
 		roots := make([]Creation, 0)
 		for _, entry := range owner.directory.List() {
@@ -253,6 +268,9 @@ func (owner *Grain) receiveAdmission(gc *goakt.GrainContext) bool {
 			Err: err,
 		})
 	case BeginClose:
+		if entry, found := owner.creations[input.Creation.AgentID]; found && entry.creationID == input.Creation.CreationID {
+			owner.cancelRestarts(input.Creation.AgentID)
+		}
 		gc.Response(owner.beginClose(input.Creation))
 	default:
 		return false
@@ -299,6 +317,9 @@ func (owner *Grain) receiveLifecycle(gc *goakt.GrainContext) bool {
 	case FindAgent:
 		owner.findAgent(gc, input)
 	case CloseAgent:
+		if entry, found := owner.creations[input.Creation.AgentID]; found && entry.creationID == input.Creation.CreationID {
+			owner.cancelRestarts(input.Creation.AgentID)
+		}
 		owner.closeAgent(gc, input)
 	case shutdownResult:
 		owner.handleShutdownResult(gc, input)

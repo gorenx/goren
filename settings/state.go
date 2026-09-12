@@ -29,8 +29,6 @@ var (
 	ErrStorage = errors.New("settings: storage operation failed")
 	// ErrUncertain means persistence must be read before deciding whether to retry.
 	ErrUncertain = errors.New("settings: commit outcome requires verification")
-	// ErrApplication means the target was saved but is not fully applied.
-	ErrApplication = errors.New("settings: saved configuration could not be applied")
 )
 
 // Group identifies a complete named configuration within one capability.
@@ -89,26 +87,20 @@ func (stored State) Validate() error {
 	return stored.User.Validate()
 }
 
-// Application reports acceptance in this process, not changes to active Turns.
-type Application struct {
-	AppliedRevision int64
-	PendingRestart  bool
-	Error           string
-}
-
-// Snapshot is a detached query result with independently named application status.
+// Snapshot is a detached view of saved configuration and its provenance.
 type Snapshot struct {
-	Base         Directory
-	State        State
-	Target       Directory
-	Applications map[Group]Application
+	// PendingRestart compares saved Provider values with this process startup.
+	PendingRestart map[string]bool
+	Base           Directory
+	State          State
+	Target         Directory
 }
 
-// Clone detaches all mutable configuration, version and application maps.
+// Clone detaches all mutable configuration and version maps.
 func (view Snapshot) Clone() Snapshot {
 	view.Base = view.Base.Clone()
 	view.State = view.State.Clone()
 	view.Target = view.Target.Clone()
-	view.Applications = maps.Clone(view.Applications)
+	view.PendingRestart = maps.Clone(view.PendingRestart)
 	return view
 }

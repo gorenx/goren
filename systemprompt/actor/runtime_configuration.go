@@ -30,35 +30,10 @@ func (owner *RuntimeGrain) applyConfiguration(gc *goakt.GrainContext, input Appl
 		})
 		return
 	}
-	if input.Config != nil {
-		prepared, err := preparePrompt(*input.Config)
-		if err != nil {
-			gc.Response(Completion{
-				Err: err,
-			})
-			return
-		}
-		layer := systemprompt.DeriveLayer(prepared.Snapshot)
-		for _, section := range owner.sections {
-			if _, err := layer.AddSection(gc.Context(), section); err != nil {
-				gc.Response(Completion{
-					Err: err,
-				})
-				return
-			}
-		}
-		candidate.SetDefinitions(layer.Capture())
-		owner.runtime = &candidate
-		owner.layer = layer
-		owner.settings = prepared.Config
-		owner.registry = nil
-		owner.version = 0
-		gc.Response(Completion{})
-		return
-	}
 	if owner.registry == nil {
-		owner.runtime = &candidate
-		gc.Response(Completion{})
+		gc.Response(Completion{
+			Err: owner.adoptConfiguration(candidate, owner.layer),
+		})
 		return
 	}
 	retained := gc.DeferResponse()
@@ -85,17 +60,34 @@ func (owner *RuntimeGrain) applyConfiguration(gc *goakt.GrainContext, input Appl
 			}
 		}
 		if failure == nil {
-			owner.layer.SetBase(result.Snapshot)
-			candidate.SetDefinitions(owner.layer.Capture())
-			owner.runtime = &candidate
-			owner.version = result.Version
-			owner.settings = result.Config.Clone()
+			layer := *owner.layer
+			layer.SetBase(result.Snapshot)
+			failure = owner.adoptConfiguration(candidate, &layer)
+			if failure == nil {
+				owner.version = result.Version
+			}
 		}
 		owner.configuration = nil
 		retained.Response(Completion{
 			Err: failure,
 		})
 	})
+}
+
+// adoptConfiguration installs one complete projection without changing its
+// definition source or registration ownership. All validation precedes mutation.
+func (owner *RuntimeGrain) adoptConfiguration(
+	candidate systemprompt.Runtime,
+	layer *systemprompt.PromptLayer,
+) error {
+	captured, err := layer.Capture().WithConfiguration(owner.settings)
+	if err != nil {
+		return err
+	}
+	candidate.SetDefinitions(captured)
+	owner.runtime = &candidate
+	owner.layer = layer
+	return nil
 }
 
 // preparePrompt uses the same owner validation and built-in definitions as the

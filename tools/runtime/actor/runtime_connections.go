@@ -38,7 +38,10 @@ func (owner *Runtime) receiveConnections(gc *goakt.GrainContext) bool {
 			Values: entries,
 		})
 	case RetryConnection:
-		if owner.creationID == "" || owner.creationID != input.CreationID || owner.connections == nil || input.Context == nil {
+		if owner.creationID == "" ||
+			owner.creationID != input.CreationID ||
+			owner.connections == nil ||
+			input.Context == nil {
 			gc.Response(Completion{
 				Err: errors.New("tools: connection retry requires the current creation and context"),
 			})

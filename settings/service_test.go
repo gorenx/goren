@@ -8,8 +8,6 @@ import (
 
 	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/mcpclient"
-	"github.com/gorenx/goren/systemprompt"
-	"github.com/gorenx/goren/tools"
 )
 
 type memoryStore struct {
@@ -36,35 +34,12 @@ func (memory *memoryStore) Commit(_ context.Context, change ChangeSet) error {
 	return nil
 }
 
-type promptRecorder struct {
-	config  systemprompt.Config
-	failure error
-	calls   int
-}
-
-func (recorder *promptRecorder) ApplyPrompt(_ context.Context, _ string, input systemprompt.Config) error {
-	recorder.calls++
-	if recorder.failure != nil {
-		return recorder.failure
-	}
-	recorder.config = input
-	return nil
-}
-
 type connectionRecorder struct {
-	definitions []mcpclient.Config
-	calls       int
-	invalid     error
+	invalid error
 }
 
 func (recorder *connectionRecorder) ValidateMCP(context.Context, []mcpclient.Config) error {
 	return recorder.invalid
-}
-
-func (recorder *connectionRecorder) ApplyMCP(_ context.Context, definitions []mcpclient.Config) error {
-	recorder.calls++
-	recorder.definitions = definitions
-	return nil
 }
 
 var providerGroup = Group{
@@ -108,8 +83,7 @@ func exampleBaseline() Directory {
 
 func TestServiceReplacesCompletePromptAndSeparatesEmptyFromReset(t *testing.T) {
 	storage := &memoryStore{}
-	prompts := &promptRecorder{}
-	owner, err := NewService(exampleBaseline(), State{}, storage, prompts, &connectionRecorder{}, &toolRecorder{})
+	owner, err := NewService(exampleBaseline(), State{}, storage, &connectionRecorder{}, &toolRecorder{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,8 +97,8 @@ func TestServiceReplacesCompletePromptAndSeparatesEmptyFromReset(t *testing.T) {
 	if view.Target.Prompts["default"].IncludeHarnessIdentity != nil {
 		t.Fatal("full replacement inherited an omitted local field")
 	}
-	if view.Applications[promptGroup].AppliedRevision != 1 {
-		t.Fatal("Prompt was not applied")
+	if view.State.Version(promptGroup) != 1 {
+		t.Fatal("Prompt revision was not saved")
 	}
 	*view.State.User.Prompts["default"].Persona = "caller mutation"
 	if *owner.Snapshot().State.User.Prompts["default"].Persona != "custom" {
@@ -139,8 +113,7 @@ func TestServiceReplacesCompletePromptAndSeparatesEmptyFromReset(t *testing.T) {
 	}
 	view, err = owner.UpdatePrompt(t.Context(), "default", 2, PromptConfig{})
 	if err != nil ||
-		view.State.Version(promptGroup) != 2 ||
-		prompts.calls != 2 {
+		view.State.Version(promptGroup) != 2 {
 		t.Fatal("identical complete replacement was not a no-op")
 	}
 	view, err = owner.ResetPrompt(t.Context(), "default", 2)
@@ -155,12 +128,11 @@ func TestServiceReplacesCompletePromptAndSeparatesEmptyFromReset(t *testing.T) {
 	}
 }
 
-func TestServiceSeparatesPersistenceAndApplicationFailure(t *testing.T) {
+func TestServicePublishesSavedValuesOnlyAfterPersistence(t *testing.T) {
 	storage := &memoryStore{
 		failure: ErrStorage,
 	}
-	prompts := &promptRecorder{}
-	owner, err := NewService(exampleBaseline(), State{}, storage, prompts, &connectionRecorder{}, &toolRecorder{})
+	owner, err := NewService(exampleBaseline(), State{}, storage, &connectionRecorder{}, &toolRecorder{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,39 +143,27 @@ func TestServiceSeparatesPersistenceAndApplicationFailure(t *testing.T) {
 	if _, err := owner.UpdatePrompt(t.Context(), "default", 0, configuration); !errors.Is(err, ErrStorage) {
 		t.Fatal(err)
 	}
-	if owner.Snapshot().State.Revision != 0 || prompts.calls != 0 {
-		t.Fatal("storage failure applied a candidate")
+	if owner.Snapshot().State.Revision != 0 {
+		t.Fatal("storage failure changed the saved snapshot")
 	}
 	storage.failure = nil
-	prompts.failure = errors.New("fixture application failure")
 	view, err := owner.UpdatePrompt(t.Context(), "default", 0, configuration)
-	if !errors.Is(err, ErrApplication) ||
-		view.State.Version(promptGroup) != 1 ||
-		view.Applications[promptGroup].AppliedRevision != 0 {
-		t.Fatalf("save and application conflated: %v", err)
-	}
-	prompts.failure = nil
-	view, err = owner.RetryApplication(t.Context(), promptGroup, 1)
-	if err != nil ||
-		view.State.Revision != 1 ||
-		view.Applications[promptGroup].AppliedRevision != 1 {
-		t.Fatalf("retry did not apply saved configuration: %v", err)
+	if err != nil || view.State.Revision != 1 {
+		t.Fatalf("save did not remain independent of runtime application: %v", err)
 	}
 }
 
-func TestServiceReconcilesUncertainCommitBeforeApplying(t *testing.T) {
+func TestServiceReconcilesUncertainCommitBeforeReturning(t *testing.T) {
 	storage := &memoryStore{
 		uncertain: true,
 	}
-	prompts := &promptRecorder{}
-	owner, err := NewService(exampleBaseline(), State{}, storage, prompts, &connectionRecorder{}, &toolRecorder{})
+	owner, err := NewService(exampleBaseline(), State{}, storage, &connectionRecorder{}, &toolRecorder{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	view, err := owner.UpdatePrompt(t.Context(), "default", 0, PromptConfig{})
 	if err != nil ||
-		view.State.Revision != 1 ||
-		prompts.calls != 1 {
+		view.State.Revision != 1 {
 		t.Fatalf("uncertain commit was not verified: %v", err)
 	}
 }
@@ -253,14 +213,13 @@ func TestServiceRejectsMCPNameConflictBeforePersistence(t *testing.T) {
 	connections := &connectionRecorder{
 		invalid: errors.New("name belongs to stdio"),
 	}
-	owner, err := NewService(exampleBaseline(), State{}, storage, &promptRecorder{}, connections, &toolRecorder{})
+	owner, err := NewService(exampleBaseline(), State{}, storage, connections, &toolRecorder{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = owner.UpdateMCP(t.Context(), "local", 0, namedMCP("local", "https://example.test"))
 	if err == nil ||
-		storage.stored.Revision != 0 ||
-		connections.calls != 0 {
+		storage.stored.Revision != 0 {
 		t.Fatal("invalid MCP target saved or applied")
 	}
 }
@@ -296,15 +255,7 @@ func TestConfigurationCodecRejectsNoncanonicalAndSecretInputs(t *testing.T) {
 }
 
 type toolRecorder struct {
-	configuration tools.Config
-	invalid       error
-	failure       error
-	calls         int
+	invalid error
 }
 
 func (recorder *toolRecorder) ValidateTool(context.Context, string) error { return recorder.invalid }
-func (recorder *toolRecorder) ApplyTool(_ context.Context, _ string, configuration tools.Config) error {
-	recorder.calls++
-	recorder.configuration = configuration.Clone()
-	return recorder.failure
-}

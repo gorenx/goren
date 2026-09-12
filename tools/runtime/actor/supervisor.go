@@ -3,9 +3,9 @@ package runtimeactor
 import (
 	"context"
 	"errors"
+	toolregistry "github.com/gorenx/goren/tools/registry"
 
 	goakt "github.com/tochemey/goakt/v4/actor"
-	"github.com/tochemey/goakt/v4/passivation"
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
 
@@ -17,14 +17,13 @@ const (
 	runtimeStopped
 )
 
-// Supervisor owns the tool Runtime and configuration Watcher for one Agent creation.
+// Supervisor owns the tool Runtime for one Agent creation.
 // The caller serializes Start and Close and retains resource responsibility until
 // Close succeeds. Registry admission and execution scheduling remain external.
 type Supervisor struct {
 	system  goakt.ActorSystem
 	address *goakt.GrainIdentity
 	command InitializeRuntime
-	watcher *goakt.PID
 	stage   releaseStage
 }
 
@@ -36,6 +35,13 @@ func NewSupervisor(ctx context.Context, system goakt.ActorSystem, command Initia
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if command.Configuration != nil {
+		captured := toolregistry.Configuration{
+			Global: command.Configuration.Global.Clone(),
+			Custom: command.Configuration.Custom.Clone(),
+		}
+		command.Configuration = &captured
 	}
 	if command.Config != nil {
 		configuration := command.Config.Clone()
@@ -71,30 +77,11 @@ func (sender *Supervisor) Start(gc *goakt.GrainContext) <-chan error {
 		reply <- errors.New("tools: Supervisor cannot start this runtime")
 		return reply
 	}
-	ctx := context.WithoutCancel(gc.Context())
-	sender.request(gc, sender.command, func(failure error) {
-		if failure != nil || sender.watcher != nil {
-			reply <- failure
-			return
-		}
-		observer, err := sender.system.Spawn(
-			ctx,
-			string(sender.command.AgentID)+".tools.configuration",
-			&Watcher{
-				AgentID:    string(sender.command.AgentID),
-				CreationID: sender.command.CreationID,
-				Target:     sender.address,
-			},
-			goakt.WithReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))),
-			goakt.WithPassivationStrategy(passivation.NewLongLivedStrategy()),
-		)
-		sender.watcher = observer
-		reply <- err
-	})
+	sender.request(gc, sender.command, func(failure error) { reply <- failure })
 	return reply
 }
 
-// Close stops observation, requests tool release asynchronously, then deactivates
+// Close requests tool release asynchronously, then deactivates
 // the original Runtime. An empty instanceID means no activation was authorized.
 // The caller freezes admission and awaits one result before retrying.
 func (sender *Supervisor) Close(gc *goakt.GrainContext, instanceID string) <-chan error {
@@ -112,13 +99,6 @@ func (sender *Supervisor) Close(gc *goakt.GrainContext, instanceID string) <-cha
 		return reply
 	}
 	ctx := context.WithoutCancel(gc.Context())
-	if sender.watcher != nil {
-		if err := sender.watcher.Shutdown(ctx); err != nil {
-			reply <- err
-			return reply
-		}
-		sender.watcher = nil
-	}
 	if sender.stage == runtimeRetained && instanceID != "" {
 		sender.request(gc, CloseRuntime{
 			CreationID: sender.command.CreationID,

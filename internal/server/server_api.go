@@ -50,7 +50,7 @@ func (owner *Server) initializeAPI(ctx context.Context, constructors *toolactor.
 	if err != nil {
 		return err
 	}
-	promptRegistry, err := initializePrompts(ctx, system, owner.settings.Prompt)
+	_, err = initializePrompts(ctx, system, owner.settings.Prompt)
 	if err != nil {
 		return err
 	}
@@ -109,6 +109,13 @@ func (owner *Server) initializeAPI(ctx context.Context, constructors *toolactor.
 		return err
 	}
 	preferences, err := settingsactor.NewClient(ctx, system)
+	if err != nil {
+		return err
+	}
+	settingsRoute, err := goakt.GrainOf[*settingsactor.Grain](ctx, system, settingsactor.Name,
+		goakt.WithLongLivedGrain(),
+		goakt.WithGrainReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))),
+	)
 	if err != nil {
 		return err
 	}
@@ -227,6 +234,7 @@ func (owner *Server) initializeAPI(ctx context.Context, constructors *toolactor.
 	agents, err := sessionadapter.NewDirectory(
 		system, owner.agents,
 		agentregistry.CreateAgent{
+			Settings:        settingsRoute,
 			Storage:         owner.sessions,
 			SessionRegistry: sessions,
 			ModelConfig:     models,
@@ -333,9 +341,7 @@ func (owner *Server) initializeAPI(ctx context.Context, constructors *toolactor.
 	for name := range owner.settings.userBaseline().Tools {
 		exposedTools[name] = struct{}{}
 	}
-	if _, err := owner.preferences.Bind(ctx, system, promptSettings{
-		registry: promptRegistry,
-	}, connections, toolSettings{
+	if _, err := owner.preferences.Bind(ctx, system, connections, toolSettings{
 		system:   system,
 		registry: tools,
 		timeout:  owner.settings.Timeout,

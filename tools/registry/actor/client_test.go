@@ -46,3 +46,39 @@ func TestClientReturnsUnmergedGlobalAndCustomSchemas(t *testing.T) {
 		t.Fatalf("configuration=%+v error=%v", configured, err)
 	}
 }
+
+func TestReadCatalogExcludesSessionCatalog(t *testing.T) {
+	running, target := startRegistry(t, true)
+	installed := ask[toolactor.Completion](t, running, target, toolactor.RegisterSource{
+		Name: "local",
+		Catalog: toolregistry.Catalog{
+			Schemas: []llm.ToolSchema{
+				{
+					Name:       "read",
+					Parameters: []byte(`{"type":"object"}`),
+				},
+			},
+		},
+	})
+	if installed.Err != nil {
+		t.Fatal(installed.Err)
+	}
+	changed := ask[toolactor.Completion](t, running, target, toolactor.ConfigureSession{
+		SessionID: "agent",
+		Catalog: toolregistry.Catalog{
+			Schemas: []llm.ToolSchema{
+				{
+					Name:       "private",
+					Parameters: []byte(`{"type":"object"}`),
+				},
+			},
+		},
+	})
+	if changed.Err != nil {
+		t.Fatal(changed.Err)
+	}
+	registered := ask[toolregistry.Catalog](t, running, target, toolactor.ReadCatalog{})
+	if len(registered.Schemas) != 1 || registered.Schemas[0].Name != "read" {
+		t.Fatal("catalog query returned the mutable user configuration")
+	}
+}

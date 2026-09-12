@@ -3,6 +3,7 @@ package runtimeactor
 import (
 	"context"
 	"errors"
+	toolregistry "github.com/gorenx/goren/tools/registry"
 	"time"
 
 	"github.com/google/uuid"
@@ -48,7 +49,7 @@ type Runtime struct {
 	calls map[agentmessage.CallID]*invocation
 	// policyRequest serializes preparation and finalization while body tasks overlap.
 	policyRequest *invocation
-	// changed remembers configuration notifications until the next Turn boundary.
+	// changed retains MCP discovery and failed application work until refresh.
 	changed bool
 }
 
@@ -146,7 +147,7 @@ func (owner *Runtime) OnReceive(gc *goakt.GrainContext) {
 			peers.questions = source.questions
 		}
 		owner.connections = peers
-		// The first Turn rechecks facts changed before subscription became active.
+		// The first Turn checks MCP discovery after resource initialization.
 		owner.changed = true
 		owner.schedule(
 			gc,
@@ -156,6 +157,9 @@ func (owner *Runtime) OnReceive(gc *goakt.GrainContext) {
 					if err := directory.ConfigureSession(ctx, settings.AgentID, *settings.Config); err != nil {
 						return err
 					}
+				}
+				if settings.Configuration != nil {
+					return owner.applyCatalog(ctx, *settings.Configuration, instances)
 				}
 				return owner.applyConfiguration(ctx, directory, instances)
 			},
@@ -263,6 +267,13 @@ func (owner *Runtime) initialize(gc *goakt.GrainContext, input InitializeRuntime
 	current := owner.deferOperation(gc)
 	if current == nil {
 		return
+	}
+	if input.Configuration != nil {
+		captured := toolregistry.Configuration{
+			Global: input.Configuration.Global.Clone(),
+			Custom: input.Configuration.Custom.Clone(),
+		}
+		input.Configuration = &captured
 	}
 	if input.Config != nil {
 		captured := input.Config.Clone()

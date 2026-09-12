@@ -127,6 +127,8 @@ func (owner *steward) OnDeactivate(context.Context, *goakt.GrainProps) error {
 
 func (owner *steward) OnReceive(gc *goakt.GrainContext) {
 	switch input := gc.Message().(type) {
+	case agentregistry.RestartChild:
+		owner.restartConfiguredChild(gc, input)
 	case start:
 		owner.start(gc, input)
 	case loaded:

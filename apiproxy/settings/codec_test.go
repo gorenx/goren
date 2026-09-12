@@ -134,24 +134,6 @@ func TestSettingsResetCodecsRequireWholeGroupIdentity(t *testing.T) {
 	}
 }
 
-func TestRetryApplicationCodecSeparatesRetryFromEditing(t *testing.T) {
-	if _, issues := api.DecodeRetryApplicationRequest(json.RawMessage(`{"ns":"prompt","name":"default","expectedRevision":0}`)); len(issues) != 0 {
-		t.Fatal(issues)
-	}
-	for _, payload := range []string{
-		`null`, `{}`,
-		`{"ns":"prompt","expectedRevision":0}`,
-		`{"ns":"prompt","name":"default","expectedRevision":null}`,
-		`{"ns":"prompt","name":"default","expectedRevision":0,"config":{}}`,
-		`{"ns":"prompt","name":"default","expectedRevision":0,"fields":[]}`,
-		`{"ns":"prompt","name":"default","expectedRevision":0,"retryApply":true}`,
-	} {
-		if _, issues := api.DecodeRetryApplicationRequest(json.RawMessage(payload)); len(issues) == 0 {
-			t.Fatalf("invalid retry accepted: %s", payload)
-		}
-	}
-}
-
 func TestMCPCodecsRequireCompleteNamedGroups(t *testing.T) {
 	valid := `{"name":"testa","expectedRevision":0,"config":{"enabled":false,"connection":{"serverName":"testa","transport":"streamable-http","url":"https://example.test"}}}`
 	if _, issues := api.DecodeUpdateMCPRequest(json.RawMessage(valid)); len(issues) != 0 {
@@ -184,11 +166,5 @@ func TestMCPCodecsRequireCompleteNamedGroups(t *testing.T) {
 		if _, issues := api.DecodeResetMCPRequest(json.RawMessage(payload)); len(issues) == 0 {
 			t.Fatalf("invalid group reset accepted: %s", payload)
 		}
-	}
-	if _, issues := api.DecodeRetryApplicationRequest(json.RawMessage(`{"ns":"mcp","name":"testa","expectedRevision":1}`)); len(issues) != 0 {
-		t.Fatal(issues)
-	}
-	if _, issues := api.DecodeRetryApplicationRequest(json.RawMessage(`{"ns":"mcp","expectedRevision":1}`)); len(issues) == 0 {
-		t.Fatal("MCP retry omitted its name")
 	}
 }

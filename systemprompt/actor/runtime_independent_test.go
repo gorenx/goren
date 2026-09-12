@@ -32,6 +32,12 @@ func TestRuntimeIndependentConfigurationSurvivesSharedChanges(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := endpoint.AddSection(t.Context(), systemprompt.PromptSection{
+		Name: "extension",
+		Text: systemprompt.StaticText("registered extension"),
+	}); err != nil {
+		t.Fatal(err)
+	}
 	targets := make([]*goakt.GrainIdentity, 0, 2)
 	for _, identifier := range []session.SessionID{"review", "research"} {
 		baseline, err := goakt.GrainOf[*initializationRegistry](t.Context(), system, "tools-"+string(identifier), goakt.WithLongLivedGrain())
@@ -94,6 +100,9 @@ func TestRuntimeIndependentConfigurationSurvivesSharedChanges(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if strings.Contains(output, "registered extension") != (index == 0) {
+			t.Fatalf("configuration changed the definition source: %s", output)
+		}
 		if !strings.Contains(output, expected) || !strings.Contains(output, "retained local instruction") || strings.Contains(output, "shared") || strings.Contains(output, "caller mutation") {
 			t.Fatalf("incorrect independent prompt: %s", output)
 		}
@@ -107,40 +116,16 @@ func TestRuntimeIndependentConfigurationSurvivesSharedChanges(t *testing.T) {
 		}
 		assertPrompt(index, string(identifier))
 	}
-	for _, input := range []promptactor.ApplyConfiguration{
-		{
-			AgentID: "review",
-			Config: &systemprompt.Config{
-				Persona:   "invalid replacement",
-				ToolOrder: []string{},
-			},
-		},
-		{
-			AgentID: "wrong-agent",
-			Config: &systemprompt.Config{
-				Persona: "wrong recipient",
-			},
-		},
-	} {
-		result := exchangePrompt[promptactor.Completion](t, system, targets[0], input)
-		if result.Err == nil {
-			t.Fatal("invalid update accepted")
-		}
-		assertPrompt(0, "review")
-	}
-	changed := exchangePrompt[promptactor.Completion](t, system, targets[0], promptactor.ApplyConfiguration{
-		AgentID: "review",
-		Config: &systemprompt.Config{
-			Persona: "updated reviewer",
-		},
+	rejected := exchangePrompt[promptactor.Completion](t, system, targets[0], promptactor.ApplyConfiguration{
+		AgentID: "wrong-agent",
 	})
-	if changed.Err != nil {
-		t.Fatal(changed.Err)
+	if rejected.Err == nil {
+		t.Fatal("wrong recipient accepted")
 	}
-	assertPrompt(0, "updated reviewer")
+	assertPrompt(0, "review")
 	assertPrompt(1, "research")
 	view := exchangePrompt[promptactor.RuntimeView](t, system, targets[0], promptactor.ReadRuntime{})
-	if view.Err != nil || view.Config.Persona != "updated reviewer" {
+	if view.Err != nil || view.Config.Persona != "review" {
 		t.Fatalf("read did not return adopted config: %+v", view)
 	}
 	*view.Config.IncludeHarnessIdentity = false
@@ -150,7 +135,7 @@ func TestRuntimeIndependentConfigurationSurvivesSharedChanges(t *testing.T) {
 	}
 }
 
-func TestIndependentConfigurationDoesNotChangeActiveAssembly(t *testing.T) {
+func TestToolRefreshDoesNotChangeActiveAssembly(t *testing.T) {
 	_, system, _ := startRegistry(t)
 	baseline, err := goakt.GrainOf[*initializationRegistry](t.Context(), system, "tools-snapshot", goakt.WithLongLivedGrain())
 	if err != nil {
@@ -217,9 +202,6 @@ func TestIndependentConfigurationDoesNotChangeActiveAssembly(t *testing.T) {
 	}
 	changed := exchangePrompt[promptactor.Completion](t, system, target, promptactor.ApplyConfiguration{
 		AgentID: "snapshot",
-		Config: &systemprompt.Config{
-			Persona: "after change",
-		},
 	})
 	if changed.Err != nil {
 		t.Fatal(changed.Err)
@@ -244,7 +226,7 @@ func TestIndependentConfigurationDoesNotChangeActiveAssembly(t *testing.T) {
 		t.Fatal(result.Err)
 	}
 	output, err := systemprompt.RenderPrompt(result.Prompt)
-	if err != nil || !strings.Contains(output, "after change") || strings.Contains(output, "before change") {
-		t.Fatalf("next assembly missed new configuration: %s %v", output, err)
+	if err != nil || !strings.Contains(output, "before change") || strings.Contains(output, "after change") {
+		t.Fatalf("next assembly changed the initialization baseline: %s %v", output, err)
 	}
 }

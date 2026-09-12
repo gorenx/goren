@@ -3,8 +3,11 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/coder/websocket"
+	agentactor "github.com/gorenx/goren/agent/actor"
+	agentregistry "github.com/gorenx/goren/agent/registry"
 	sessionevents "github.com/gorenx/goren/apiproxy/session/events"
 	settingsapi "github.com/gorenx/goren/apiproxy/settings"
 	"github.com/gorenx/goren/connection"
@@ -14,6 +17,7 @@ import (
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/settings"
 	"github.com/gorenx/goren/systemprompt"
+	promptactor "github.com/gorenx/goren/systemprompt/actor"
 	"github.com/gorenx/goren/tools"
 	toolregistry "github.com/gorenx/goren/tools/registry"
 	catalogactor "github.com/gorenx/goren/tools/registry/actor"
@@ -126,24 +130,17 @@ func TestSettingsHTTPPublishesAndRestoresMCPWithoutOpeningConnections(t *testing
 	target := mcpHTTPConfig("fixture", secondHTTP.URL)
 	view := save(0, target, true)
 	fixtureRevision := view.Revision
-	if view.ApplyError != "" || view.AppliedRevision == nil || *view.AppliedRevision != view.Revision {
+	if view.Applies != settingsapi.ApplyAgentRestart {
 		t.Fatalf("MCP configuration was not published: %+v", view)
 	}
-	if definitions := mcpDefinitions(t, ctx, process); len(definitions) != 1 || definitions["fixture"].URL != secondHTTP.URL {
+	if definitions := savedMCPDefinitions(t, ctx, process); len(definitions) != 1 || definitions["fixture"].URL != secondHTTP.URL {
 		t.Fatal("Settings HTTP did not publish the replacement target")
 	}
 	view = save(0, mcpHTTPConfig("broken", brokenHTTP.URL), true)
-	if view.ApplyError != "" || view.AppliedRevision == nil || *view.AppliedRevision != view.Revision {
+	if view.Applies != settingsapi.ApplyAgentRestart {
 		t.Fatal("unavailable endpoint prevented configuration publication")
 	}
-	retried := settingsHTTP(t, ctx, process, "settings.retryApplication", map[string]any{
-		"ns":               "mcp",
-		"name":             "broken",
-		"expectedRevision": view.Revision,
-	})
-	if retried.Revision != view.Revision || retried.ApplyError != "" || *retried.AppliedRevision != retried.Revision {
-		t.Fatalf("configuration publication retry=%+v", retried)
-	}
+	brokenRevision := view.Revision
 	if first.listens.Load() != 0 || second.listens.Load() != 0 || broken.listens.Load() != 0 {
 		t.Fatal("Settings acquired network connections")
 	}
@@ -151,7 +148,7 @@ func TestSettingsHTTPPublishesAndRestoresMCPWithoutOpeningConnections(t *testing
 		t.Fatal(err)
 	}
 	process = start()
-	definitions := mcpDefinitions(t, ctx, process)
+	definitions := savedMCPDefinitions(t, ctx, process)
 	if len(definitions) != 2 || definitions["fixture"].URL != secondHTTP.URL || definitions["broken"].URL != brokenHTTP.URL {
 		t.Fatal("restart did not publish the persisted HTTP targets")
 	}
@@ -159,34 +156,34 @@ func TestSettingsHTTPPublishesAndRestoresMCPWithoutOpeningConnections(t *testing
 		t.Fatal("restart did not apply persisted Provider configuration")
 	}
 	view = settingsHTTP(t, ctx, process, "settings.resetMCP", map[string]any{
-		"expectedRevision": retried.Revision,
+		"expectedRevision": brokenRevision,
 		"name":             "broken",
 	})
-	if view.ApplyError != "" || *view.AppliedRevision != view.Revision || len(mcpDefinitions(t, ctx, process)) != 1 {
+	if view.Applies != settingsapi.ApplyAgentRestart || len(savedMCPDefinitions(t, ctx, process)) != 1 {
 		t.Fatalf("reset did not publish the remaining configuration: %+v", view)
 	}
 	view = settingsHTTP(t, ctx, process, "settings.resetMCP", settingsapi.ResetMCPRequest{
 		Name:             "fixture",
 		ExpectedRevision: fixtureRevision,
 	})
-	if view.ApplyError != "" || mcpDefinitions(t, ctx, process)["fixture"].URL != firstHTTP.URL {
+	if view.Applies != settingsapi.ApplyAgentRestart || savedMCPDefinitions(t, ctx, process)["fixture"].URL != firstHTTP.URL {
 		t.Fatal("reset did not restore the local HTTP baseline")
 	}
 	view = save(view.Revision, mcpHTTPConfig("fixture", firstHTTP.URL), false)
-	if view.ApplyError != "" || len(mcpDefinitions(t, ctx, process)) != 0 {
+	if view.Applies != settingsapi.ApplyAgentRestart || len(savedMCPDefinitions(t, ctx, process)) != 0 {
 		t.Fatal("disabled named HTTP configuration was not published")
 	}
 	if err := process.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
 	process = start()
-	if len(mcpDefinitions(t, ctx, process)) != 0 || first.listens.Load() != 0 || second.listens.Load() != 0 || broken.listens.Load() != 0 {
+	if len(savedMCPDefinitions(t, ctx, process)) != 0 || first.listens.Load() != 0 || second.listens.Load() != 0 || broken.listens.Load() != 0 {
 		t.Fatal("restart discarded disabled configuration or opened a network connection")
 	}
 
 }
 
-func TestPromptBaselineUpdateReachesExistingSessionNextTurn(t *testing.T) {
+func TestPromptBaselineUpdateRestartsExistingSession(t *testing.T) {
 	requests := make(chan string, 4)
 	remote := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, incoming *http.Request) {
 		var request struct {
@@ -253,21 +250,23 @@ func TestPromptBaselineUpdateReachesExistingSessionNextTurn(t *testing.T) {
 	}
 	var revision int64
 	for index, marker := range []string{"configuration-persona-old", "configuration-persona-new", "configuration-persona-old"} {
+		previous := serverReady(t, ctx, process, "prompt-settings").Creation.CreationID
 		if index == 1 {
 			payload := callHTTP(t, ctx, process, "settings.updatePrompt", json.RawMessage(`{"name":"default","expectedRevision":0,"config":{"persona":"configuration-persona-new"}}`))
 			var view settingsapi.NamespaceView
 			if err := json.Unmarshal(payload, &view); err != nil {
 				t.Fatal(err)
 			}
-			if view.ApplyError != "" ||
-				view.AppliedRevision == nil ||
-				*view.AppliedRevision != view.Revision {
+			if view.Applies != settingsapi.ApplyAgentRestart {
 				t.Fatalf("Prompt save did not apply: %s", payload)
 			}
 			revision = view.Revision
 		}
 		if index == 2 {
 			callHTTP(t, ctx, process, "settings.resetPrompt", json.RawMessage(fmt.Sprintf(`{"name":"default","expectedRevision":%d}`, revision)))
+		}
+		if index > 0 {
+			awaitSettingsRestart(t, ctx, process, "prompt-settings", previous)
 		}
 		callHTTP(t, ctx, process, "session.prompt", json.RawMessage(`{"sessionId":"prompt-settings","mode":"queue","content":[{"type":"text","text":"hello"}]}`))
 		select {
@@ -294,7 +293,7 @@ func TestPromptBaselineUpdateReachesExistingSessionNextTurn(t *testing.T) {
 	}
 }
 
-func TestSettingsHTTPToolUpdatePreservesTurnAndSurvivesRestart(t *testing.T) {
+func TestSettingsHTTPToolUpdateCancelsExecutionAndSurvivesRestart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 	defer cancel()
 	source := &echoProvider{
@@ -415,6 +414,7 @@ func TestSettingsHTTPToolUpdatePreservesTurnAndSurvivesRestart(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("tool did not begin")
 	}
+	previous := serverReady(t, ctx, process, "tool-settings").Creation.CreationID
 	disabled := false
 	view := settingsHTTP(t, ctx, process, settingsapi.UpdateToolMethod, settingsapi.UpdateToolRequest{
 		Name: "echo",
@@ -423,23 +423,17 @@ func TestSettingsHTTPToolUpdatePreservesTurnAndSurvivesRestart(t *testing.T) {
 			Visible: &disabled,
 		},
 	})
-	if view.ApplyError != "" ||
-		view.AppliedRevision == nil ||
-		*view.AppliedRevision != view.Revision {
+	if view.Applies != settingsapi.ApplyAgentRestart {
 		t.Fatalf("tool configuration was not applied: %+v", view)
 	}
-	if source.opens.Load() != 1 || source.closes.Load() != 0 {
-		t.Fatal("configuration interrupted the active tool")
-	}
-	source.release <- struct{}{}
+	awaitSettingsRestart(t, ctx, process, "tool-settings", previous)
 	waitTurn()
-	assertRequest(true)
 	assertRequest(true)
 	prompt()
 	waitTurn()
 	assertRequest(false)
 	if source.closes.Load() != 1 {
-		t.Fatal("disabled tool was not released at next Turn")
+		t.Fatal("disabled tool was not released before replacement startup")
 	}
 	feed.CloseNow()
 	if err := process.Close(ctx); err != nil {
@@ -462,35 +456,208 @@ func TestSettingsHTTPToolUpdatePreservesTurnAndSurvivesRestart(t *testing.T) {
 		Name:             "echo",
 		ExpectedRevision: view.Revision,
 	})
-	if reset.User != nil || reset.ApplyError != "" {
+	if reset.User != nil || reset.Applies != settingsapi.ApplyAgentRestart {
 		t.Fatalf("reset did not restore inheritance: %+v", reset)
 	}
 	read = runtimeRequest[catalogactor.Configuration](t, ctx, process.system, directory, catalogactor.ReadConfiguration{})
 	policy = read.Value.Global.Policies["echo"]
 	if policy.Enabled == nil ||
-		!*policy.Enabled ||
+		*policy.Enabled ||
 		policy.Visible == nil ||
-		!*policy.Visible {
-		t.Fatal("reset did not apply the local tool group")
+		*policy.Visible {
+		t.Fatal("reset directly mutated the registered tool source")
 	}
 }
 
-func mcpDefinitions(t *testing.T, ctx context.Context, process *Server) map[string]mcpclient.Config {
+func savedMCPDefinitions(t *testing.T, ctx context.Context, process *Server) map[string]mcpclient.Config {
 	t.Helper()
-	address, err := goakt.GrainOf[*catalogactor.RegistryGrain](ctx, process.system, catalogactor.RegistryName)
-	if err != nil {
+	var snapshot settingsapi.DescribeValue
+	if err := json.Unmarshal(callHTTP(t, ctx, process, settingsapi.DescribeMethod, json.RawMessage(`{}`)), &snapshot); err != nil {
 		t.Fatal(err)
 	}
-	payload, err := process.system.AskGrain(ctx, address, catalogactor.ReadConfiguration{
-		SessionID: "configuration-probe",
-	}, time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	result := payload.(catalogactor.Configuration)
 	definitions := make(map[string]mcpclient.Config)
-	for _, definition := range result.Value.Global.MCP {
-		definitions[definition.ServerName] = definition
+	for _, entry := range snapshot.Namespaces {
+		if entry.NS != "mcp" || string(entry.Value) == "null" {
+			continue
+		}
+		var configuration settings.MCPConfig
+		if err := json.Unmarshal(entry.Value, &configuration); err != nil {
+			t.Fatal(err)
+		}
+		if configuration.Enabled {
+			definitions[entry.Name] = configuration.Connection
+		}
 	}
 	return definitions
+}
+
+// awaitSettingsRestart waits for a new admitted lifetime rather than treating a
+// successful Settings save as an acknowledgement of asynchronous resource cleanup.
+func awaitSettingsRestart(t *testing.T, ctx context.Context, process *Server, identifier, previous string) agentregistry.Ready {
+	t.Helper()
+	route, err := goakt.GrainOf[*agentregistry.Grain](ctx, process.system, agentregistry.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var failure error
+	for {
+		payload, err := process.system.AskGrain(ctx, route, agentregistry.FindAgent{
+			AgentID:   session.SessionID(identifier),
+			WaitReady: true,
+		}, time.Second)
+		failure = err
+		if err == nil {
+			ready := payload.(agentregistry.Ready)
+			failure = ready.Err
+			if ready.Err == nil && ready.Creation.CreationID != previous {
+				return ready
+			}
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("configuration restart did not complete: %v", failure)
+			return agentregistry.Ready{}
+		case <-time.After(time.Millisecond):
+		}
+	}
+}
+
+// lifecycleProvider blocks the first implementation release to make shutdown
+// ordering observable without relying on timing or an uncooperative tool call.
+type lifecycleProvider struct {
+	echoProvider
+	closing  chan struct{}
+	release  chan error
+	attempts atomic.Int32
+}
+
+func (source *lifecycleProvider) Open(ctx context.Context) (tool.Implementation, error) {
+	body, err := source.echoProvider.Open(ctx)
+	body.Resource = &releaseBarrier{
+		source:   source,
+		resource: body.Resource,
+	}
+	return body, err
+}
+
+type releaseBarrier struct {
+	source   *lifecycleProvider
+	resource tool.Resource
+}
+
+func (barrier *releaseBarrier) Close(ctx context.Context) error {
+	if barrier.source.attempts.Add(1) == 1 {
+		close(barrier.source.closing)
+		select {
+		case err := <-barrier.source.release:
+			if err != nil {
+				return err
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return barrier.resource.Close(ctx)
+}
+
+func TestSettingsRestartHonorsResourceClosure(t *testing.T) {
+	for _, scenario := range []string{"latest", "explicit-close", "release-failure"} {
+		t.Run(scenario, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			source := &lifecycleProvider{
+				closing: make(chan struct{}),
+				release: make(chan error, 1),
+			}
+			root := t.TempDir()
+			process, err := New(Config{
+				Address:           "127.0.0.1:0",
+				WorkingDirectory:  root,
+				SessionDatabase:   filepath.Join(root, "sessions.sqlite"),
+				WorkspaceDatabase: filepath.Join(root, "workspaces.sqlite"),
+				CredentialsPath:   filepath.Join(root, "credentials.json"),
+				Tools: toolregistry.Catalog{
+					Schemas: []llm.ToolSchema{echoSchema("restart")},
+				},
+				Providers: tool.Providers{"echo": source},
+			}, providerEnvironment{home: root})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := process.Start(ctx); err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				select {
+				case source.release <- nil:
+				default:
+				}
+				if err := process.Close(context.Background()); err != nil {
+					t.Error(err)
+				}
+			}()
+			callHTTP(t, ctx, process, "session.create", json.RawMessage(`{"sessionId":"restart"}`))
+			previous := serverReady(t, ctx, process, "restart")
+			route, err := goakt.GrainOf[*agentregistry.Grain](ctx, process.system, agentregistry.Name)
+			if err != nil {
+				t.Fatal(err)
+			}
+			first := settingsHTTP(t, ctx, process, settingsapi.UpdatePromptMethod, settingsapi.UpdatePromptRequest{
+				Name:   "default",
+				Config: settings.PromptConfig{Persona: new("first")},
+			})
+			select {
+			case <-source.closing:
+			case <-ctx.Done():
+				t.Fatal("release was not requested")
+			}
+			if source.opens.Load() != 1 {
+				t.Fatal("replacement started before old resources closed")
+			}
+			switch scenario {
+			case "latest":
+				settingsHTTP(t, ctx, process, settingsapi.UpdatePromptMethod, settingsapi.UpdatePromptRequest{
+					Name:             "default",
+					ExpectedRevision: first.Revision,
+					Config:           settings.PromptConfig{Persona: new("latest")},
+				})
+				source.release <- nil
+				current := awaitSettingsRestart(t, ctx, process, "restart", previous.Creation.CreationID)
+				target, err := goakt.GrainOf[*promptactor.RuntimeGrain](ctx, process.system, promptactor.RuntimeName("restart"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				view := runtimeRequest[promptactor.RuntimeView](t, ctx, process.system, target, promptactor.ReadRuntime{})
+				if view.Err != nil || view.Config.Persona != "latest" || source.opens.Load() != 2 || current.Creation.AgentID != previous.Creation.AgentID {
+					t.Fatalf("restart did not coalesce latest configuration: %+v opens=%d", view, source.opens.Load())
+				}
+			case "explicit-close":
+				completed := make(chan error, 1)
+				go func() {
+					payload, err := process.system.AskGrain(ctx, route, agentregistry.CloseAgent{Creation: previous.Creation}, 5*time.Second)
+					if err == nil {
+						err = payload.(agentactor.Closed).Err
+					}
+					completed <- err
+				}()
+				// BeginClose is an acknowledged admission barrier for the explicit close.
+				runtimeRequest[agentregistry.CloseAccepted](t, ctx, process.system, route, agentregistry.BeginClose{Creation: previous.Creation})
+				source.release <- nil
+				if err := <-completed; err != nil {
+					t.Fatal(err)
+				}
+				found := runtimeRequest[agentregistry.Ready](t, ctx, process.system, route, agentregistry.FindAgent{AgentID: "restart", WaitReady: true})
+				if found.Err == nil || source.opens.Load() != 1 {
+					t.Fatal("explicit close resurrected the Agent")
+				}
+			case "release-failure":
+				failure := errors.New("test release failure")
+				source.release <- failure
+				found := runtimeRequest[agentregistry.Ready](t, ctx, process.system, route, agentregistry.FindAgent{AgentID: "restart", WaitReady: true})
+				if !errors.Is(found.Err, failure) || source.opens.Load() != 1 {
+					t.Fatalf("failed cleanup allowed replacement: %+v", found)
+				}
+			}
+		})
+	}
 }

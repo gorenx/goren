@@ -2,9 +2,7 @@ package toolactor
 
 import (
 	"context"
-	"errors"
 
-	"github.com/google/uuid"
 	toolregistry "github.com/gorenx/goren/tools/registry"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
@@ -25,26 +23,24 @@ func (*RegistryGrain) OnActivate(context.Context, *goakt.GrainProps) error { ret
 // OnDeactivate releases no tool resources; their lifetime owner closes them first.
 func (*RegistryGrain) OnDeactivate(context.Context, *goakt.GrainProps) error { return nil }
 
-// OnReceive delegates configuration decisions and sends scope-only notifications.
+// OnReceive serializes source registration and Session catalog reads.
 func (owner *RegistryGrain) OnReceive(gc *goakt.GrainContext) {
 	if owner.receiveTools(gc) {
 		return
 	}
-	var change ConfigurationChanged
 	var err error
 	switch input := gc.Message().(type) {
 	case RegisterSource:
 		err = owner.registry.RegisterSource(input.Name, input.Catalog)
 	case RemoveSource:
 		owner.registry.RemoveSource(input.Name)
-	case ConfigureTool:
-		err = owner.registry.ConfigureTool(input.Name, input.Config)
 	case ConfigureSession:
-		change.SessionID = input.SessionID
 		err = owner.registry.ConfigureSession(input.SessionID, input.Catalog)
 	case RemoveSession:
-		change.SessionID = input.SessionID
 		owner.registry.RemoveSession(input.SessionID)
+	case ReadCatalog:
+		gc.Response(owner.registry.Catalog())
+		return
 	case ReadConfiguration:
 		gc.Response(Configuration{
 			Value: owner.registry.Read(input.SessionID),
@@ -53,14 +49,6 @@ func (owner *RegistryGrain) OnReceive(gc *goakt.GrainContext) {
 	default:
 		gc.Unhandled()
 		return
-	}
-	if err == nil {
-		topic := gc.ActorSystem().TopicActor()
-		if topic == nil {
-			err = errors.New("tools: configuration saved but PubSub is unavailable")
-		} else {
-			err = goakt.Tell(gc.Context(), topic, goakt.NewPublish(uuid.NewString(), ConfigurationTopic, change))
-		}
 	}
 	gc.Response(Completion{
 		Err: err,

@@ -125,3 +125,15 @@ func (settings Config) Clone() Config {
 	settings.ToolOrder = slices.Clone(settings.ToolOrder)
 	return settings
 }
+
+// Configuration returns the complete validated values with defaults resolved.
+func (input ValidatedConfig) Configuration() Config {
+	identity := input.includeHarnessIdentity
+	runtimeContext := input.includeRuntimeContext
+	return Config{
+		IncludeHarnessIdentity: &identity,
+		IncludeRuntimeContext:  &runtimeContext,
+		Persona:                input.persona,
+		ToolOrder:              slices.Clone(input.toolOrder),
+	}
+}

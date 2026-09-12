@@ -119,15 +119,6 @@ func (endpoint *Client) ResetTool(ctx context.Context, name string, expected int
 	})
 }
 
-// RetryApplication applies a saved group without rewriting it.
-func (endpoint *Client) RetryApplication(ctx context.Context, identifier settings.Group, expected int64) (settings.Snapshot, error) {
-	return endpoint.call(ctx, RetryApplication{
-		Context:          ctx,
-		Group:            identifier,
-		ExpectedRevision: expected,
-	})
-}
-
 func (endpoint *Client) call(ctx context.Context, message any) (settings.Snapshot, error) {
 	if ctx == nil {
 		return settings.Snapshot{}, settings.ErrInvalid

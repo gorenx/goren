@@ -7,7 +7,7 @@ import (
 	"github.com/gorenx/goren/tools"
 )
 
-func TestServiceToolWholeReplacementResetAndRetry(t *testing.T) {
+func TestServiceToolWholeReplacementAndReset(t *testing.T) {
 	baseline := exampleBaseline()
 	hidden := false
 	baseline.Tools = map[string]tools.Config{
@@ -23,36 +23,30 @@ func TestServiceToolWholeReplacementResetAndRetry(t *testing.T) {
 	toolsets := &toolRecorder{
 		invalid: ErrInvalid,
 	}
-	owner, err := NewService(baseline, State{}, storage, &promptRecorder{}, &connectionRecorder{}, toolsets)
+	owner, err := NewService(baseline, State{}, storage, &connectionRecorder{}, toolsets)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := owner.UpdateTool(t.Context(), "read", 0, tools.Config{}); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("invalid owner target accepted: %v", err)
 	}
-	if storage.stored.Revision != 0 || toolsets.calls != 0 {
+	if storage.stored.Revision != 0 {
 		t.Fatal("rejected tool target was saved or applied")
 	}
 	toolsets.invalid = nil
-	toolsets.failure = errors.New("fixture application failure")
 	view, err := owner.UpdateTool(t.Context(), "read", 0, tools.Config{})
-	if !errors.Is(err, ErrApplication) || view.State.Version(identifier) != 1 {
-		t.Fatalf("application failure lost saved configuration: %v", err)
+	if err != nil || view.State.Version(identifier) != 1 {
+		t.Fatalf("valid tool configuration was not saved: %v", err)
 	}
 	_, visible := view.Target.Tools["read"].Resolve()
 	if !visible {
 		t.Fatal("whole replacement inherited the local visibility flag")
 	}
-	toolsets.failure = nil
-	view, err = owner.RetryApplication(t.Context(), identifier, 1)
-	if err != nil || view.Applications[identifier].AppliedRevision != 1 {
-		t.Fatalf("retry failed: %v", err)
-	}
 	view, err = owner.ResetTool(t.Context(), "read", 1)
 	if err != nil || view.State.User.Has(identifier) {
 		t.Fatalf("reset did not clear the full override: %v", err)
 	}
-	_, visible = toolsets.configuration.Resolve()
+	_, visible = view.Target.Tools["read"].Resolve()
 	if visible || view.State.Version(identifier) != 2 {
 		t.Fatal("reset did not restore local visibility and retain revision")
 	}

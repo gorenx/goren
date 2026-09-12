@@ -66,3 +66,10 @@ type Inspected struct {
 	Registration agent.Registration
 	Err          error
 }
+
+// RestartChild asks the child's existing manager to replace an obsolete lifetime.
+// It carries no editable configuration; startup reads the latest Settings snapshot.
+// Completion acknowledges admission. The manager exposes startup and cleanup failures.
+type RestartChild struct {
+	Creation Creation
+}

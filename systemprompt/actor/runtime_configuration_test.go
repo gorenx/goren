@@ -13,7 +13,7 @@ import (
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
 
-func TestRuntimeConfigurationRefreshesBaselineOnlyAtTurnBoundary(t *testing.T) {
+func TestRuntimeRefreshRetainsInitializationBaseline(t *testing.T) {
 	endpoint, running, registry := startRegistry(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -118,7 +118,7 @@ func TestRuntimeConfigurationRefreshesBaselineOnlyAtTurnBoundary(t *testing.T) {
 	if err != nil || payload.(promptactor.RuntimeView).Config.Persona != "old global persona" {
 		t.Fatalf("query exposed unadopted shared config: %#v %v", payload, err)
 	}
-	// A tool notification must not switch the shared prompt baseline mid-Turn.
+	// Tool discovery must retain the prompt baseline selected at initialization.
 	payload, err = running.AskGrain(ctx, targets[0], promptactor.ApplyTools{
 		AgentID: "global-agent",
 	}, time.Second)
@@ -136,8 +136,8 @@ func TestRuntimeConfigurationRefreshesBaselineOnlyAtTurnBoundary(t *testing.T) {
 			t.Fatalf("configure: %#v %v", payload, err)
 		}
 	}
-	if actual := assemble(targets[0]); !strings.Contains(actual, "new global persona") || strings.Contains(actual, "old global persona") {
-		t.Fatalf("next Turn missed baseline: %s", actual)
+	if actual := assemble(targets[0]); !strings.Contains(actual, "old global persona") || strings.Contains(actual, "new global persona") {
+		t.Fatalf("refresh changed initialization baseline: %s", actual)
 	}
 	if actual := assemble(targets[1]); !strings.Contains(actual, "local agent persona") || strings.Contains(actual, "new global persona") {
 		t.Fatalf("baseline overwrote local persona: %s", actual)

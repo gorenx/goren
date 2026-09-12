@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/gorenx/goren/llm"
-	"github.com/gorenx/goren/tools"
 	toolregistry "github.com/gorenx/goren/tools/registry"
 	toolactor "github.com/gorenx/goren/tools/registry/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
@@ -53,7 +52,7 @@ func ask[T any](t *testing.T, system goakt.ActorSystem, target *goakt.GrainIdent
 	return value
 }
 
-func TestSchemaRegistrationRetainsConfigurationWhenNotificationFails(t *testing.T) {
+func TestSchemaRegistrationDoesNotRequirePubSub(t *testing.T) {
 	for _, pubsub := range []bool{false, true} {
 		system, target := startRegistry(t, pubsub)
 		reply := ask[toolactor.Completion](t, system, target, toolactor.RegisterSource{
@@ -67,38 +66,12 @@ func TestSchemaRegistrationRetainsConfigurationWhenNotificationFails(t *testing.
 				},
 			},
 		})
-		if (reply.Err == nil) != pubsub {
+		if reply.Err != nil {
 			t.Fatalf("notification=%v pubsub=%v", reply.Err, pubsub)
 		}
 		captured := ask[toolactor.Configuration](t, system, target, toolactor.ReadConfiguration{SessionID: "agent"})
 		if len(captured.Value.Global.Schemas) != 1 || len(captured.Value.Custom.Schemas) != 0 {
 			t.Fatal("configuration was lost or pre-merged")
-		}
-		falseValue := false
-		for _, configuration := range []tools.Config{
-			{
-				Enabled: &falseValue,
-			},
-			{},
-		} {
-			for attempt := 0; attempt < 2; attempt++ {
-				changed := ask[toolactor.Completion](t, system, target, toolactor.ConfigureTool{
-					Name:   "read",
-					Config: configuration,
-				})
-				if (changed.Err == nil) != pubsub {
-					t.Fatalf("tool notification=%v pubsub=%v", changed.Err, pubsub)
-				}
-				captured = ask[toolactor.Configuration](t, system, target, toolactor.ReadConfiguration{})
-				policy := captured.Value.Global.Policies["read"]
-				enabled, visible := configuration.Resolve()
-				if policy.Enabled == nil ||
-					policy.Visible == nil ||
-					*policy.Enabled != enabled ||
-					*policy.Visible != visible {
-					t.Fatal("tool configuration was lost after notification or retry")
-				}
-			}
 		}
 	}
 }

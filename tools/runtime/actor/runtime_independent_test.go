@@ -36,14 +36,7 @@ func initializeConfiguredRuntime(t *testing.T, system goakt.ActorSystem, registr
 	if initialized.Err != nil {
 		t.Fatal(initialized.Err)
 	}
-	_, err = system.Spawn(t.Context(), string(identifier)+".watcher", &runtimeactor.Watcher{
-		AgentID:    string(identifier),
-		CreationID: "creation",
-		Target:     target,
-	}, goakt.WithReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))))
-	if err != nil {
-		t.Fatal(err)
-	}
+
 	return target, runtimeactor.CloseRuntime{
 		CreationID: "creation",
 		InstanceID: ask[string](t, system, authority, readClaim{}),
@@ -119,58 +112,21 @@ func TestRuntimeIndependentSessionsBindSameNameToOwnProviderAndRejectFallback(t 
 		len(read(empty).Snapshot.Names) != 0 {
 		t.Fatal("independent selection was not applied through initialization")
 	}
-	// Publish the replacement and wait for the ordinary global subscriber to
-	// adopt it. Child runtimes receive the same notice but retain their selection.
+	// New registrations do not change any running lifetime.
 	globalSource.current.Store(globalNext)
 	publish(globalNext.id)
-	refresh := func(target *goakt.GrainIdentity, identifier string) runtimeactor.Definitions {
-		return ask[runtimeactor.Definitions](t, system, target, runtimeactor.RefreshConfiguration{
+	localSource.current.Store(nil)
+	for _, target := range []*goakt.GrainIdentity{parent, child, empty} {
+		result := ask[runtimeactor.Definitions](t, system, target, runtimeactor.RefreshConfiguration{
 			CreationID: "creation",
-			ID:         identifier,
+			ID:         "discovery",
 		})
-	}
-	updated := awaitProviderRefresh(t, func() runtimeactor.Definitions {
-		return refresh(parent, "global-update")
-	}, func(result runtimeactor.Definitions) bool {
-		return result.Err != nil || globalNext.opens.Load() != 0
-	})
-	if updated.Err != nil || globalFirst.closes.Load() != 1 {
-		t.Fatalf("parent did not switch: %+v closes=%d", updated, globalFirst.closes.Load())
-	}
-	for _, target := range []*goakt.GrainIdentity{child, empty} {
-		if result := refresh(target, "observe-global-update"); result.Err != nil {
+		if result.Err != nil {
 			t.Fatal(result.Err)
 		}
 	}
-	if local.opens.Load() != 1 || local.closes.Load() != 0 || len(read(empty).Snapshot.Names) != 0 {
-		t.Fatal("global publication rebuilt independent work")
-	}
-	// Force a real child replacement after withdrawing its exact constructor.
-	// A same-name global constructor must never be used as a fallback.
-	localSource.current.Store(nil)
-	selection.Schemas[0].Description = "changed local definition"
-	configured := ask[catalogactor.Completion](t, system, registry, catalogactor.ConfigureSession{
-		SessionID: "child",
-		Catalog:   selection,
-	})
-	if configured.Err != nil {
-		t.Fatal(configured.Err)
-	}
-	failed := awaitProviderRefresh(t, func() runtimeactor.Definitions {
-		return refresh(child, "local-replacement")
-	}, func(result runtimeactor.Definitions) bool {
-		return result.Err != nil
-	})
-	if failed.Err == nil || globalNext.opens.Load() != 1 || local.opens.Load() != 1 || local.closes.Load() != 0 ||
-		read(child).Snapshot.Schemas[0].Description != definition.Description {
-		t.Fatal("failed exact binding used fallback or changed the active schema")
-	}
-	localSource.current.Store(local)
-	if result := refresh(child, "retry-local-replacement"); result.Err != nil {
-		t.Fatal(result.Err)
-	}
-	if local.opens.Load() != 2 || local.closes.Load() != 1 {
-		t.Fatal("child did not replace its own work")
+	if globalFirst.closes.Load() != 0 || globalNext.opens.Load() != 0 || local.closes.Load() != 0 || len(read(empty).Snapshot.Names) != 0 {
+		t.Fatal("registration changed an active lifetime")
 	}
 	for _, entry := range []struct {
 		target *goakt.GrainIdentity
@@ -193,7 +149,7 @@ func TestRuntimeIndependentSessionsBindSameNameToOwnProviderAndRejectFallback(t 
 			t.Fatal(result.Err)
 		}
 	}
-	if globalNext.closes.Load() != 1 || local.closes.Load() != 2 {
-		t.Fatalf("resources were not released independently: global=%d child=%d", globalNext.closes.Load(), local.closes.Load())
+	if globalFirst.closes.Load() != 1 || local.closes.Load() != 1 {
+		t.Fatalf("resources were not released independently: global=%d child=%d", globalFirst.closes.Load(), local.closes.Load())
 	}
 }

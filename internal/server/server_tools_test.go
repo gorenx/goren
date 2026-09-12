@@ -27,7 +27,7 @@ import (
 
 // HTTP, AgentLoop, configuration PubSub, Prompt, and the common ToolActor all run
 // through production wiring. The test model and tool body expose external waits.
-func TestHTTPToolsChangeOnlyBetweenTurns(t *testing.T) {
+func TestHTTPRegistryChangesDoNotMutateRunningAgent(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	source := &echoProvider{
@@ -109,7 +109,7 @@ func TestHTTPToolsChangeOnlyBetweenTurns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for turn, description := range []string{"original", "updated"} {
+	for turn, description := range []string{"original", "original"} {
 		callHTTP(t, ctx, process, "session.prompt", json.RawMessage(`{"sessionId":"tools","mode":"queue","content":[{"type":"text","text":"use echo"}]}`))
 		select {
 		case <-source.entered:
@@ -125,7 +125,7 @@ func TestHTTPToolsChangeOnlyBetweenTurns(t *testing.T) {
 				t.Fatal(result.Err)
 			}
 		}
-		if source.opens.Load() != int32(turn+1) || source.closes.Load() != int32(turn) {
+		if source.opens.Load() != 1 || source.closes.Load() != 0 {
 			t.Fatalf("work replaced during Turn: opens=%d closes=%d", source.opens.Load(), source.closes.Load())
 		}
 		source.release <- struct{}{}
@@ -165,7 +165,7 @@ func TestHTTPToolsChangeOnlyBetweenTurns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if source.opens.Load() != 2 || source.closes.Load() != 2 {
+	if source.opens.Load() != 1 || source.closes.Load() != 1 {
 		t.Fatalf("unreleased work: %d/%d", source.opens.Load(), source.closes.Load())
 	}
 }

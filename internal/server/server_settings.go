@@ -21,7 +21,6 @@ import (
 	usersettings "github.com/gorenx/goren/settings"
 	settingsactor "github.com/gorenx/goren/settings/actor"
 	"github.com/gorenx/goren/systemprompt"
-	promptactor "github.com/gorenx/goren/systemprompt/actor"
 	toolregistry "github.com/gorenx/goren/tools/registry"
 	"github.com/gorenx/goren/tools/tool"
 )
@@ -280,19 +279,6 @@ func ConfigFromLocal(input local.Config, directory string, version string) (Conf
 	return output, nil
 }
 
-// promptSettings maps exposed configuration names to the installed Prompt owner.
-// It borrows the Client; Server owns the registry lifetime.
-type promptSettings struct {
-	registry *promptactor.Client
-}
-
-func (endpoint promptSettings) ApplyPrompt(ctx context.Context, name string, configuration systemprompt.Config) error {
-	if name != "default" {
-		return usersettings.ErrInvalid
-	}
-	return endpoint.registry.ApplyBaseline(ctx, configuration)
-}
-
 // toolSettings maps exposed names to the existing Registry's configuration use case.
 // Framework identity and source names are borrowed; Server owns their lifetimes.
 type toolSettings struct {
@@ -312,28 +298,10 @@ func (endpoint toolSettings) ValidateTool(ctx context.Context, name string) erro
 	}
 	reply, valid := payload.(catalogactor.Configuration)
 	if !valid {
-		return usersettings.ErrApplication
+		return errors.New("server: invalid tool registry reply")
 	}
 	if !slices.ContainsFunc(reply.Value.Global.Schemas, func(entry llm.ToolSchema) bool { return entry.Name == name }) {
 		return usersettings.ErrInvalid
 	}
 	return nil
-}
-
-func (endpoint toolSettings) ApplyTool(ctx context.Context, name string, configuration tools.Config) error {
-	if _, exposed := endpoint.names[name]; !exposed {
-		return usersettings.ErrInvalid
-	}
-	payload, err := endpoint.system.AskGrain(ctx, endpoint.registry, catalogactor.ConfigureTool{
-		Name:   name,
-		Config: configuration.Clone(),
-	}, endpoint.timeout)
-	if err != nil {
-		return err
-	}
-	reply, valid := payload.(catalogactor.Completion)
-	if !valid {
-		return usersettings.ErrApplication
-	}
-	return reply.Err
 }

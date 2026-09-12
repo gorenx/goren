@@ -12,8 +12,6 @@ import (
 	"github.com/gorenx/goren/connection"
 	"github.com/gorenx/goren/mcpclient"
 	"github.com/gorenx/goren/settings"
-	"github.com/gorenx/goren/systemprompt"
-	"github.com/gorenx/goren/tools"
 )
 
 func TestSettingsGatewayReportsAbsentProvider(t *testing.T) {
@@ -60,19 +58,9 @@ func (storage *storedSettings) Commit(_ context.Context, change settings.ChangeS
 	return nil
 }
 
-type promptUpdater struct {
-	failure error
-}
-
-func (updater *promptUpdater) ApplyPrompt(context.Context, string, systemprompt.Config) error {
-	return updater.failure
-}
-
 type connectionUpdater struct{}
 
 func (*connectionUpdater) ValidateMCP(context.Context, []mcpclient.Config) error { return nil }
-
-func (*connectionUpdater) ApplyMCP(context.Context, []mcpclient.Config) error { return nil }
 
 type observedSettings struct {
 	settings.Settings
@@ -87,7 +75,6 @@ func (observer *observedSettings) Describe(ctx context.Context) (settings.Snapsh
 func TestSettingsGatewayEditsDomainStateAndReportsApplication(t *testing.T) {
 	persona := "base persona"
 	storage := &storedSettings{}
-	updater := &promptUpdater{}
 	business, err := settings.NewService(settings.Directory{
 		Values: settings.Values{
 			Prompts: map[string]settings.PromptConfig{
@@ -97,7 +84,7 @@ func TestSettingsGatewayEditsDomainStateAndReportsApplication(t *testing.T) {
 			},
 			Providers: map[string]settings.ProviderConfig{"deepseek": {}},
 		},
-	}, settings.State{}, storage, updater, &connectionUpdater{}, &connectionUpdater{})
+	}, settings.State{}, storage, &connectionUpdater{}, &connectionUpdater{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,21 +168,13 @@ func TestSettingsGatewayEditsDomainStateAndReportsApplication(t *testing.T) {
 		t.Fatalf("uncertain outcome: %#v", uncertain)
 	}
 	storage.failure = nil
-	updater.failure = errors.New("application fixture failure")
 	saved := readGroup(api.UpdatePromptMethod, `{"name":"default","expectedRevision":4,"config":{"persona":"saved"}}`)
-	if saved.ApplyError == "" ||
-		saved.Revision != 5 ||
-		*saved.AppliedRevision != 4 {
-		t.Fatal("application failure was not separated from persistence")
+	if saved.Revision != 5 || saved.Applies != api.ApplyAgentRestart {
+		t.Fatal("incorrect saved configuration scope")
 	}
-	updater.failure = nil
-	retried := readGroup(api.RetryApplicationMethod, `{"ns":"prompt","name":"default","expectedRevision":5}`)
-	if retried.ApplyError != "" ||
-		retried.Revision != 5 ||
-		*retried.AppliedRevision != 5 {
-		t.Fatal("retry did not apply the saved revision")
+	if methods.HasUnary("settings.retryApplication") {
+		t.Fatal("obsolete application writer is still exposed")
 	}
-
 	if observer.reads != 1 {
 		t.Fatalf("updates or retry performed extra reads: %d", observer.reads)
 	}
@@ -203,7 +182,7 @@ func TestSettingsGatewayEditsDomainStateAndReportsApplication(t *testing.T) {
 		t.Fatal("obsolete mutation route is still registered")
 	}
 	provider := readGroup(api.UpdateProviderMethod, `{"name":"deepseek","expectedRevision":0,"config":{"apiKeyEnv":"CUSTOM_API_KEY"}}`)
-	if provider.NS != "llmprovider" || !provider.PendingRestart {
+	if provider.NS != "llmprovider" || provider.Applies != api.ApplyRestart {
 		t.Fatalf("provider result = %#v", provider)
 	}
 	mcp := readGroup(api.UpdateMCPMethod, `{"name":"testa","expectedRevision":0,"config":{"enabled":true,"connection":{"serverName":"testa","transport":"streamable-http","url":"https://example.test"}}}`)
@@ -222,10 +201,6 @@ func TestSettingsGatewayEditsDomainStateAndReportsApplication(t *testing.T) {
 		mcpReset.Name != "testa" {
 		t.Fatalf("MCP reset: %#v", mcpReset)
 	}
-	unknown := call(api.RetryApplicationMethod, `{"ns":"unknown","name":"default","expectedRevision":0}`)
-	if unknown.Error == nil || unknown.Error.Code != connection.ErrorSettingsNotExposed {
-		t.Fatalf("unknown group: %#v", unknown)
-	}
 	invalid := call(api.UpdateProviderMethod, `{"name":"deepseek","expectedRevision":8,"config":{"streamIdleTimeoutMs":-1}}`)
 	if invalid.Error == nil || invalid.Error.Code != connection.ErrorSettingsRejected {
 		t.Fatalf("invalid domain configuration: %#v", invalid)
@@ -241,5 +216,4 @@ func TestSettingsGatewayEditsDomainStateAndReportsApplication(t *testing.T) {
 	}
 }
 
-func (*connectionUpdater) ValidateTool(context.Context, string) error            { return nil }
-func (*connectionUpdater) ApplyTool(context.Context, string, tools.Config) error { return nil }
+func (*connectionUpdater) ValidateTool(context.Context, string) error { return nil }

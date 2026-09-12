@@ -3,40 +3,36 @@ package settings
 import (
 	"context"
 	"errors"
-	"maps"
 	"reflect"
 	"time"
 
 	"github.com/gorenx/goren/tools"
 )
 
-// Service owns configuration provenance, conditional submissions and application
-// progress. Its Actor serializes all access, including asynchronous work; callers
+// Service owns configuration provenance and conditional durable submissions.
+// Its Actor serializes all access, including asynchronous work; callers
 // may retain only detached Snapshot values while an operation is running.
 type Service struct {
-	baseline     Directory
-	state        State
-	target       Directory
-	storage      Store
-	prompts      PromptUpdater
-	connections  MCPUpdater
-	toolsets     ToolUpdater
-	applications map[Group]Application
+	// providers captures the immutable configuration used to start this process.
+	providers   map[string]ProviderConfig
+	baseline    Directory
+	state       State
+	target      Directory
+	storage     Store
+	connections MCPValidator
+	toolsets    ToolValidator
 }
 
-// NewService restores a service after the composition root successfully installs
-// the corresponding initial target. initial is the snapshot already read from
-// storage for that installation; construction does not read or open storage.
+// NewService restores the latest saved configuration. Construction does not
+// read storage or apply configuration to running capabilities.
 func NewService(
 	baseline Directory,
 	initial State,
 	storage Store,
-	prompts PromptUpdater,
-	connections MCPUpdater,
-	toolsets ToolUpdater,
+	connections MCPValidator,
+	toolsets ToolValidator,
 ) (*Service, error) {
 	if storage == nil ||
-		prompts == nil ||
 		connections == nil ||
 		toolsets == nil {
 		return nil, ErrInvalid
@@ -48,26 +44,14 @@ func NewService(
 	if err != nil {
 		return nil, err
 	}
-	applications := make(map[Group]Application)
-	for _, identifier := range resolved.Groups() {
-		applications[identifier] = Application{
-			AppliedRevision: initial.Version(identifier),
-		}
-	}
-	for identifier, revision := range initial.Versions {
-		applications[identifier] = Application{
-			AppliedRevision: revision,
-		}
-	}
 	return &Service{
-		baseline:     baseline.Clone(),
-		state:        initial.Clone(),
-		target:       resolved,
-		storage:      storage,
-		prompts:      prompts,
-		connections:  connections,
-		toolsets:     toolsets,
-		applications: applications,
+		providers:   resolved.Clone().Providers,
+		baseline:    baseline.Clone(),
+		state:       initial.Clone(),
+		target:      resolved,
+		storage:     storage,
+		connections: connections,
+		toolsets:    toolsets,
 	}, nil
 }
 
@@ -85,11 +69,15 @@ func (owner *Service) Describe(ctx context.Context) (Snapshot, error) {
 // Snapshot captures the serialized owner's query projection without I/O.
 // Actor tasks and mailbox code must not call it concurrently with a mutation.
 func (owner *Service) Snapshot() Snapshot {
+	pending := make(map[string]bool)
+	for name, configuration := range owner.target.Providers {
+		pending[name] = !reflect.DeepEqual(owner.providers[name], configuration)
+	}
 	return Snapshot{
-		Base:         owner.baseline.Clone(),
-		State:        owner.state.Clone(),
-		Target:       owner.target.Clone(),
-		Applications: maps.Clone(owner.applications),
+		PendingRestart: pending,
+		Base:           owner.baseline.Clone(),
+		State:          owner.state.Clone(),
+		Target:         owner.target.Clone(),
 	}
 }
 
@@ -230,20 +218,14 @@ func (owner *Service) commit(ctx context.Context, identifier Group, overrides Di
 				}
 				owner.state = stored.Clone()
 				owner.target = latest
-				for key, revision := range stored.Versions {
-					if key.Section == ProviderSection {
-						application := owner.applications[key]
-						application.PendingRestart = revision != application.AppliedRevision
-						owner.applications[key] = application
-					}
-				}
+
 			}
 			return owner.Snapshot(), err
 		}
 	}
 	owner.state = next
 	owner.target = resolved
-	return owner.RetryApplication(ctx, identifier, next.Version(identifier))
+	return owner.Snapshot(), nil
 }
 
 var _ Settings = (*Service)(nil)

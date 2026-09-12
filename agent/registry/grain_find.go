@@ -10,6 +10,20 @@ import (
 
 func (owner *Grain) findAgent(gc *goakt.GrainContext, input FindAgent) {
 	if input.WaitReady {
+		if pending := owner.restarts[input.AgentID]; pending != nil {
+			if pending.failure != nil {
+				gc.Response(Ready{Err: pending.failure})
+				return
+			}
+			reply := gc.DeferResponse()
+			if reply == nil {
+				gc.Response(Ready{Err: errors.New("agent registry: restart resolution requires a request")})
+				return
+			}
+			pending.replies = append(pending.replies, reply)
+			return
+		}
+
 		entry, found := owner.creations[input.AgentID]
 		if found &&
 			!owner.directory.IsClosed(input.AgentID) &&

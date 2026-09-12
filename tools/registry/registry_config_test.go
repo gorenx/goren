@@ -12,7 +12,7 @@ type configGuard struct{}
 
 func (*configGuard) DenyReason(tools.ToolExecution) (string, bool) { return "retained guard", true }
 
-func TestRegistryToolConfigurationPreservesSourceCapabilities(t *testing.T) {
+func TestRegistryCatalogPreservesSourceCapabilities(t *testing.T) {
 	var directory toolregistry.Registry
 	hidden := false
 	guard := &configGuard{}
@@ -31,46 +31,27 @@ func TestRegistryToolConfigurationPreservesSourceCapabilities(t *testing.T) {
 	if err := directory.RegisterSource("source", source); err != nil {
 		t.Fatal(err)
 	}
-	disabled := false
-	if err := directory.ConfigureTool("read", tools.Config{
-		Enabled: &disabled,
-	}); err != nil {
-		t.Fatal(err)
+	registered := directory.Catalog()
+	defaults := registered.Policies["read"]
+	if defaults.Enabled != nil || defaults.Visible == nil || *defaults.Visible || defaults.Guards[0] != guard {
+		t.Fatal("registered definitions included user flags or lost source policy")
 	}
-	disabled = true
-	current := directory.Read("agent").Global
-	policy := current.Policies["read"]
-	if *policy.Enabled ||
-		!*policy.Visible ||
-		policy.Guards[0] != guard {
-		t.Fatal("configuration inherited a source flag, aliased input, or replaced a guard")
-	}
-	if current.ProviderIDs["read"] != "first" || current.Schemas[0].Version != 1 {
-		t.Fatal("configuration changed schema or binding")
-	}
-	if current.Policies["other"].Enabled != nil {
-		t.Fatal("configuration changed another tool")
+	*defaults.Visible = true
+	registered.ProviderIDs["read"] = "caller mutation"
+	isolated := directory.Catalog()
+	if *isolated.Policies["read"].Visible || isolated.ProviderIDs["read"] != "first" {
+		t.Fatal("catalog read exposed mutable source values")
 	}
 	source.ProviderIDs["read"] = "second"
 	if err := directory.RegisterSource("source", source); err != nil {
 		t.Fatal(err)
 	}
-	current = directory.Read("agent").Global
-	if *current.Policies["read"].Enabled || current.ProviderIDs["read"] != "second" {
-		t.Fatal("source republication erased configuration or lost binding")
-	}
-	if err := directory.ConfigureTool("read", tools.Config{}); err != nil {
-		t.Fatal(err)
-	}
-	current = directory.Read("agent").Global
-	if !*current.Policies["read"].Enabled || !*current.Policies["read"].Visible {
-		t.Fatal("empty complete configuration inherited earlier flags")
+	current := directory.Read("agent").Global
+	if current.Policies["read"].Enabled != nil || current.ProviderIDs["read"] != "second" {
+		t.Fatal("source replacement lost its policy or Provider binding")
 	}
 	directory.RemoveSource("source")
 	if len(directory.Read("agent").Global.Schemas) != 0 || len(directory.Read("agent").Global.Policies) != 0 {
 		t.Fatal("withdrawal left a configured ghost tool")
-	}
-	if err := directory.ConfigureTool("read", tools.Config{}); err == nil {
-		t.Fatal("unknown tool accepted")
 	}
 }

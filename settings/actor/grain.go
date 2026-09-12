@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/google/uuid"
 	"github.com/gorenx/goren/settings"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
@@ -19,11 +20,13 @@ var ErrUnavailable = errors.New("settings: service is unavailable")
 type Grain struct {
 	service *settings.Service
 	view    settings.Snapshot
-	queue   []*request
-	active  *request
-	closing bool
-	closed  bool
-	closers []*goakt.GrainReply
+	// publishedRevision is the latest revision submitted to PubSub, not a subscriber acknowledgement.
+	publishedRevision int64
+	queue             []*request
+	active            *request
+	closing           bool
+	closed            bool
+	closers           []*goakt.GrainReply
 }
 
 type request struct {
@@ -59,6 +62,7 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 		}
 		owner.service = incoming.Service
 		owner.view = incoming.Service.Snapshot()
+		owner.publishedRevision = owner.view.State.Revision
 		gc.Response(Result{
 			Snapshot: owner.view.Clone(),
 		})
@@ -104,6 +108,7 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 			return
 		}
 		owner.view = incoming.result.Snapshot.Clone()
+		owner.publishChange(gc)
 		owner.active.reply.Response(incoming.result)
 		owner.active = nil
 		owner.dispatch(gc)
@@ -173,4 +178,30 @@ func (owner *Grain) dispatch(gc *goakt.GrainContext) {
 		})
 		owner.dispatch(gc)
 	}
+}
+
+// publishChange publishes only newly observed durable revisions. Consumers
+// receive saved values; Agent Registry owns affected-lifetime replacement.
+// A failed publication remains eligible for retry after the next command.
+func (owner *Grain) publishChange(gc *goakt.GrainContext) {
+	if owner.view.State.Revision <= owner.publishedRevision {
+		return
+	}
+	topic := gc.ActorSystem().TopicActor()
+	if topic == nil {
+		gc.ActorSystem().Logger().Error("settings: configuration publication requires PubSub")
+		return
+	}
+	notice := ChangeNotice{
+		Revision:      owner.view.State.Revision,
+		configuration: owner.view.Target.Clone(),
+	}
+	// Cancellation of the editor cannot retract an already saved revision.
+	err := goakt.Tell(context.WithoutCancel(gc.Context()), topic,
+		goakt.NewPublish(uuid.NewString(), ChangedTopic, notice))
+	if err != nil {
+		gc.ActorSystem().Logger().Error("settings: configuration notice publication failed")
+		return
+	}
+	owner.publishedRevision = notice.Revision
 }

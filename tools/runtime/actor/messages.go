@@ -16,12 +16,14 @@ import (
 // InitializeRuntime binds an Agent creation and applies its initial Session catalog.
 // Only the Agent lifecycle owner starts this Runtime and authorizes its activation.
 type InitializeRuntime struct {
-	AgentID    session.SessionID
-	CreationID string
-	Authority  *goakt.GrainIdentity
-	Registry   *goakt.GrainIdentity
-	Config     *toolregistry.Catalog
-	Timeout    time.Duration
+	// Configuration is resolved once by the lifecycle owner before resources open.
+	Configuration *toolregistry.Configuration
+	AgentID       session.SessionID
+	CreationID    string
+	Authority     *goakt.GrainIdentity
+	Registry      *goakt.GrainIdentity
+	Config        *toolregistry.Catalog
+	Timeout       time.Duration
 }
 
 // CloseRuntime releases only the original activation's configuration and instances.

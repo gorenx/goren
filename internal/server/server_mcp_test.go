@@ -167,6 +167,7 @@ func testHTTPMCPAgent(t *testing.T, dynamic bool) {
 	}()
 	callHTTP(t, ctx, process, "credentials.set", json.RawMessage(`{"ref":"DEEPSEEK_API_KEY","value":"test-key"}`))
 	callHTTP(t, ctx, process, "session.create", json.RawMessage(`{"sessionId":"mcp-agent"}`))
+	lifetime := serverReady(t, ctx, process, "mcp-agent").Creation.CreationID
 	if dynamic {
 		initial := callHTTP(t, ctx, process, "mcp.list", json.RawMessage(`{"sessionId":"mcp-agent"}`))
 		if string(initial) != "[]" {
@@ -179,9 +180,10 @@ func testHTTPMCPAgent(t *testing.T, dynamic bool) {
 				Connection: mcpHTTPConfig("fixture", external.URL),
 			},
 		})
-		if view.ApplyError != "" {
+		if view.Applies != settingsapi.ApplyAgentRestart {
 			t.Fatalf("MCP configuration was not published: %+v", view)
 		}
+		lifetime = awaitSettingsRestart(t, ctx, process, "mcp-agent", lifetime).Creation.CreationID
 
 	}
 	feed, _, err := websocket.Dial(ctx, "ws://"+process.Address()+connection.MuxEventsPath, nil)
@@ -245,10 +247,10 @@ func testHTTPMCPAgent(t *testing.T, dynamic bool) {
 			Connection: mcpHTTPConfig("fixture", external.URL),
 		},
 	})
-	if view.ApplyError != "" {
+	if view.Applies != settingsapi.ApplyAgentRestart {
 		t.Fatalf("disabled configuration was not published: %+v", view)
 	}
-	refreshMCP(t, ctx, process, "mcp-agent", "")
+	awaitSettingsRestart(t, ctx, process, "mcp-agent", lifetime)
 	remaining := callHTTP(t, ctx, process, "mcp.list", json.RawMessage(`{"sessionId":"mcp-agent"}`))
 	if string(remaining) != "[]" {
 		t.Fatalf("connection remained after applying disabled configuration: %s", remaining)
@@ -399,6 +401,7 @@ func TestHTTPMCPReconnectionRebindsExistingSession(t *testing.T) {
 	}()
 	callHTTP(t, ctx, process, "credentials.set", json.RawMessage(`{"ref":"DEEPSEEK_API_KEY","value":"test-key"}`))
 	callHTTP(t, ctx, process, "session.create", json.RawMessage(`{"sessionId":"mcp-agent"}`))
+	lifetime := serverReady(t, ctx, process, "mcp-agent").Creation.CreationID
 	feed, _, err := websocket.Dial(ctx, "ws://"+process.Address()+connection.MuxEventsPath, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -432,9 +435,10 @@ func TestHTTPMCPReconnectionRebindsExistingSession(t *testing.T) {
 			Connection: mcpHTTPConfig("fixture", secondHTTP.URL),
 		},
 	})
-	if view.ApplyError != "" || binding() != previous {
-		t.Fatal("Settings publication replaced an existing Session binding before application")
+	if view.Applies != settingsapi.ApplyAgentRestart {
+		t.Fatal("MCP save omitted automatic restart")
 	}
+	awaitSettingsRestart(t, ctx, process, "mcp-agent", lifetime)
 	turn()
 	current := binding()
 	if current == "" || current == previous {

@@ -150,7 +150,7 @@ func (owner *connections) changed() bool {
 	return changed
 }
 
-// catalog adds this Runtime's discovered bindings to a detached configuration.
+// catalog replaces this Runtime's discovered bindings in a detached configuration.
 // Connections and ProviderIDs never enter the shared Registry's MCP definitions.
 func (owner *connections) catalog(current toolregistry.Catalog) (toolregistry.Catalog, error) {
 	selected := current.Clone()
@@ -159,6 +159,19 @@ func (owner *connections) catalog(current toolregistry.Catalog) (toolregistry.Ca
 	}
 	owner.mu.RLock()
 	defer owner.mu.RUnlock()
+	// Applied snapshots already include discovery. Remove only bindings owned
+	// by this Runtime before installing each connection's current definitions.
+	supplied := make(map[tools.ProviderID]struct{}, len(owner.resources))
+	for _, peer := range owner.resources {
+		supplied[peer.ProviderID()] = struct{}{}
+	}
+	selected.Schemas = slices.DeleteFunc(selected.Schemas, func(schema llm.ToolSchema) bool {
+		if _, found := supplied[selected.ProviderIDs[schema.Name]]; found {
+			delete(selected.ProviderIDs, schema.Name)
+			return true
+		}
+		return false
+	})
 	names := make(map[string]struct{}, len(selected.Schemas))
 	for _, schema := range selected.Schemas {
 		if _, found := names[schema.Name]; found {
