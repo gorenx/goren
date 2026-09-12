@@ -63,7 +63,19 @@ func TestHTTPImageReachesDeepSeekAndCanBeRead(t *testing.T) {
 	defer process.Close(context.Background())
 	callHTTP(t, ctx, process, "credentials.set", json.RawMessage(`{"ref":"DEEPSEEK_API_KEY","value":"test-key"}`))
 	callHTTP(t, ctx, process, "session.create", json.RawMessage(`{"sessionId":"pictures"}`))
-	callHTTP(t, ctx, process, "session.selectModel", json.RawMessage(`{"sessionId":"pictures","provider":"deepseek-official","model":"deepseek-v4-flash-vision-exp"}`))
+	selection, err := json.Marshal(struct {
+		SessionID string `json:"sessionId"`
+		Provider  string `json:"provider"`
+		Model     string `json:"model"`
+	}{
+		SessionID: "pictures",
+		Provider:  deepseek.ProviderRoute,
+		Model:     "deepseek-v4-flash-vision-exp",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	callHTTP(t, ctx, process, "session.selectModel", selection)
 	var source bytes.Buffer
 	if err := png.Encode(&source, raster.NewNRGBA(raster.Rect(0, 0, 3, 2))); err != nil {
 		t.Fatal(err)

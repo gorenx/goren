@@ -3,38 +3,53 @@ package runtimeactor
 import (
 	"context"
 	"errors"
+	toolregistry "github.com/gorenx/goren/tools/registry"
+	"time"
 
 	"github.com/google/uuid"
 	agentactor "github.com/gorenx/goren/agent/actor"
 	"github.com/gorenx/goren/agentmessage"
+	"github.com/gorenx/goren/mcpclient"
 	"github.com/gorenx/goren/session"
+	"github.com/gorenx/goren/tools/execution"
+	catalogactor "github.com/gorenx/goren/tools/registry/actor"
 	toolruntime "github.com/gorenx/goren/tools/runtime"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
 
 // Runtime schedules one Agent's tool initialization and cleanup. Business state
-// and failure recovery belong to toolruntime.Runtime; this actor never starts another actor.
+// and failure recovery belong to toolruntime.Toolset; this actor never starts another actor.
 type Runtime struct {
-	// tools maps tool names to this Runtime's exact activation and cleanup responsibility.
+	// actors maps tool names to this Runtime's exact activation and cleanup responsibility.
 	// Failed initialization or close retains the entry; successful removal deletes it.
-	tools      map[string]*toolLifecycle
+	actors     map[string]*toolLifecycle
 	instanceID string
 	// These identities bind requests to the initialized Agent lifetime.
 	creationID string
 	agentID    session.SessionID
-	// toolRuntime owns the Agent tool set, update recovery, and resource cleanup.
-	toolRuntime *toolruntime.Runtime
-	catalog     *Catalog
-	instances   *Instances
-	active      *operation
+	// collection owns applied tool membership and replacement progress.
+	collection *toolruntime.Toolset
+	// scheduler retains compiled contracts until the next configuration attempt.
+	// Per-call policy pipelines and mutable state remain with execution.Call.
+	scheduler *execution.Scheduler
+	// Registry routing and request limits belong to this initialized lifetime.
+	registry     *goakt.GrainIdentity
+	replyTimeout time.Duration
+	// connections owns Session MCP transports; tools borrow them until release.
+	connections *connections
+	// retries owns transport recovery without acquiring the tool execution operation.
+	retries map[string]*connectionRetry
+	// request retains only the reply and cancellation of initialization, refresh
+	// or close. Replacement progress remains in collection.
+	request *operation
 	// calls maps a model tool-call ID to its retained business Call and current
 	// cancellation/reply handles. Entries remain until result consumption releases
 	// them; a cancellation request alone does not remove the execution obligation.
 	calls map[agentmessage.CallID]*invocation
 	// policyRequest serializes preparation and finalization while body tasks overlap.
 	policyRequest *invocation
-	// changed remembers configuration notifications until the next Turn boundary.
+	// changed retains MCP discovery and failed application work until refresh.
 	changed bool
 }
 
@@ -63,7 +78,12 @@ func (owner *Runtime) OnActivate(context.Context, *goakt.GrainProps) error {
 
 // OnDeactivate cancels work without certifying that external resources were released.
 func (owner *Runtime) OnDeactivate(context.Context, *goakt.GrainProps) error {
-	for _, instance := range owner.tools {
+	for _, request := range owner.retries {
+		request.cancel()
+		request.reply.Response(Completion{Err: errors.New("tools: Runtime stopped before connection recovery completed")})
+	}
+	owner.retries = nil
+	for _, instance := range owner.actors {
 		if instance.active != nil {
 			pending := instance.active
 			pending.cancel()
@@ -81,18 +101,18 @@ func (owner *Runtime) OnDeactivate(context.Context, *goakt.GrainProps) error {
 			current.reply.Response(CallResult{Err: errors.New("tools: runtime stopped before call completion")})
 		}
 	}
-	if owner.active != nil {
-		if owner.active.cancel != nil {
-			owner.active.cancel()
+	if owner.request != nil {
+		if owner.request.cancel != nil {
+			owner.request.cancel()
 		}
-		owner.finish(owner.active, errors.New("tools: runtime stopped before operation completion"))
+		owner.finish(owner.request, errors.New("tools: runtime stopped before operation completion"))
 	}
 	return nil
 }
 
 // OnReceive serializes protocol handling; framework tasks exclusively run the business owner.
 func (owner *Runtime) OnReceive(gc *goakt.GrainContext) {
-	if owner.receiveTools(gc) || owner.receiveCalls(gc) || owner.receiveConfiguration(gc) {
+	if owner.receiveTools(gc) || owner.receiveCalls(gc) || owner.receiveConfiguration(gc) || owner.receiveConnections(gc) {
 		return
 	}
 	switch input := gc.Message().(type) {
@@ -100,7 +120,7 @@ func (owner *Runtime) OnReceive(gc *goakt.GrainContext) {
 		owner.initialize(gc, input)
 	case authorized:
 		gc.NoErr()
-		if owner.active != input.operation {
+		if owner.request != input.operation {
 			return
 		}
 		if input.err != nil {
@@ -108,42 +128,42 @@ func (owner *Runtime) OnReceive(gc *goakt.GrainContext) {
 			return
 		}
 		settings := input.operation.initialization
-		business, err := toolruntime.NewRuntime(settings.AgentID)
+		business, err := toolruntime.NewToolset(settings.AgentID)
 		if err != nil {
 			owner.finish(input.operation, err)
 			return
 		}
-		directory, err := NewCatalog(gc.ActorSystem(), settings.Registry, settings.Timeout)
+		directory, err := catalogactor.NewClient(gc.ActorSystem(), settings.Registry, settings.Timeout)
 		if err != nil {
 			owner.finish(input.operation, err)
 			return
 		}
-		instances, err := NewInstances(
-			gc.ActorSystem(),
-			gc.Self(),
-			settings.Registry,
-			settings.AgentID,
-			settings.CreationID,
-			settings.Timeout,
-		)
-		if err != nil {
-			owner.finish(input.operation, err)
-			return
+		owner.collection = business
+		instances := owner.newToolClient(gc)
+		peers := &connections{
+			servers: make(map[string]*mcpclient.Connection),
 		}
-		owner.toolRuntime = business
-		owner.catalog = directory
-		owner.instances = instances
-		// The first Turn rechecks facts changed before subscription became active.
+		if source, ok := gc.ActorSystem().Extension(providerID).(*Provider); ok {
+			peers.questions = source.questions
+		}
+		owner.connections = peers
+		// The first Turn checks MCP discovery after resource initialization.
 		owner.changed = true
-		owner.schedule(gc, input.operation, func(ctx context.Context) error {
-			if settings.Config != nil {
-				err := directory.ConfigureSession(ctx, settings.AgentID, *settings.Config)
-				if err != nil {
-					return err
+		owner.schedule(
+			gc,
+			input.operation,
+			func(ctx context.Context) error {
+				if settings.Config != nil {
+					if err := directory.ConfigureSession(ctx, settings.AgentID, *settings.Config); err != nil {
+						return err
+					}
 				}
-			}
-			return business.Initialize(ctx, directory, instances)
-		})
+				if settings.Configuration != nil {
+					return owner.applyCatalog(ctx, *settings.Configuration, instances)
+				}
+				return owner.applyConfiguration(ctx, directory, instances)
+			},
+		)
 	case completed:
 		gc.NoErr()
 		if input.operation.refreshID != "" {
@@ -155,19 +175,19 @@ func (owner *Runtime) OnReceive(gc *goakt.GrainContext) {
 		result := RuntimeView{}
 		if owner.creationID == "" ||
 			owner.creationID != input.CreationID ||
-			owner.toolRuntime == nil ||
-			owner.active != nil {
+			owner.collection == nil ||
+			owner.request != nil {
 			result.Err = errors.New("tools: runtime snapshot is unavailable")
 		} else {
-			result.Snapshot, result.Err = owner.toolRuntime.Snapshot()
+			result.Snapshot, result.Err = owner.collection.Snapshot()
 		}
 		gc.Response(result)
 	case ReadDefinitions:
 		result := Definitions{}
-		if owner.creationID != input.CreationID || owner.toolRuntime == nil || owner.active != nil {
+		if owner.creationID != input.CreationID || owner.collection == nil || owner.request != nil {
 			result.Err = errors.New("tools: definitions do not belong to an available runtime")
 		} else {
-			result.Value, result.Err = owner.toolRuntime.Definitions()
+			result.Value, result.Err = owner.collection.Definitions()
 		}
 		gc.Response(result)
 	case CloseRuntime:
@@ -181,11 +201,16 @@ func (owner *Runtime) OnReceive(gc *goakt.GrainContext) {
 			gc.Response(Completion{Err: errors.New("tools: close does not own this runtime activation")})
 			return
 		}
-		if owner.active != nil {
+		if len(owner.retries) != 0 {
+			for _, request := range owner.retries {
+				request.cancel()
+			}
+		}
+		if owner.request != nil {
 			gc.Response(Completion{Err: errors.New("tools: runtime operation is still running")})
 			return
 		}
-		if owner.toolRuntime == nil {
+		if owner.collection == nil {
 			gc.Response(Completion{})
 			return
 		}
@@ -193,9 +218,15 @@ func (owner *Runtime) OnReceive(gc *goakt.GrainContext) {
 		if current == nil {
 			return
 		}
-		business := owner.toolRuntime
-		instances := owner.instances
-		owner.schedule(gc, current, func(ctx context.Context) error { return business.Close(ctx, instances) })
+		business := owner.collection
+		instances := owner.newToolClient(gc)
+		peers := owner.connections
+		owner.schedule(gc, current, func(ctx context.Context) error {
+			if err := business.Close(ctx, instances); err != nil {
+				return err
+			}
+			return peers.close(ctx)
+		})
 	default:
 		gc.Unhandled()
 	}
@@ -210,7 +241,7 @@ func (owner *Runtime) initialize(gc *goakt.GrainContext, input InitializeRuntime
 		gc.Response(Completion{Err: errors.New("tools: runtime creation and owner routes are required")})
 		return
 	}
-	if owner.active != nil {
+	if owner.request != nil {
 		gc.Response(Completion{Err: errors.New("tools: runtime operation is still running")})
 		return
 	}
@@ -218,16 +249,16 @@ func (owner *Runtime) initialize(gc *goakt.GrainContext, input InitializeRuntime
 		var err error
 		if owner.creationID != input.CreationID || owner.agentID != input.AgentID {
 			err = errors.New("tools: runtime is bound to a different initialization")
-		} else if owner.toolRuntime == nil {
+		} else if owner.collection == nil {
 			err = errors.New("tools: runtime initialization failed")
 		} else {
-			_, err = owner.toolRuntime.Snapshot()
+			_, err = owner.collection.Snapshot()
 		}
 		gc.Response(Completion{Err: err})
 		return
 	}
-	// Automatic reactivation may not retain the original GrainOf options.
-	// Enable requests before verifying this activation with the lifecycle owner.
+	// Enable outgoing requests for this activation before claiming its lifetime.
+	// The caller supplies the incoming async envelope independently of activation options.
 	err := gc.EnableReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll)))
 	if err != nil {
 		gc.Response(Completion{Err: err})
@@ -237,6 +268,13 @@ func (owner *Runtime) initialize(gc *goakt.GrainContext, input InitializeRuntime
 	if current == nil {
 		return
 	}
+	if input.Configuration != nil {
+		captured := toolregistry.Configuration{
+			Global: input.Configuration.Global.Clone(),
+			Custom: input.Configuration.Custom.Clone(),
+		}
+		input.Configuration = &captured
+	}
 	if input.Config != nil {
 		captured := input.Config.Clone()
 		input.Config = &captured
@@ -244,6 +282,8 @@ func (owner *Runtime) initialize(gc *goakt.GrainContext, input InitializeRuntime
 	current.initialization = &input
 	owner.creationID = input.CreationID
 	owner.agentID = input.AgentID
+	owner.registry = input.Registry
+	owner.replyTimeout = input.Timeout
 	received := make(chan authorized, 1)
 	err = gc.PipeToSelf(func() (any, error) { return <-received, nil })
 	if err != nil {
@@ -281,7 +321,7 @@ func (owner *Runtime) deferOperation(gc *goakt.GrainContext) *operation {
 		return nil
 	}
 	current := &operation{reply: reply}
-	owner.active = current
+	owner.request = current
 	return current
 }
 
@@ -308,13 +348,13 @@ func (owner *Runtime) schedule(gc *goakt.GrainContext, current *operation, run f
 }
 
 func (owner *Runtime) finish(current *operation, failure error) {
-	if owner.active != current {
+	if owner.request != current {
 		return
 	}
 	if current.cancel != nil {
 		current.cancel()
 	}
-	owner.active = nil
+	owner.request = nil
 	if current.refreshID != "" {
 		owner.changed = true
 		current.reply.Response(Definitions{Err: failure})

@@ -1,17 +1,12 @@
 export interface SessionModels {
- current: { provider: string; model: string }
+ current: { provider: string; model: string } | null
  groups: Array<{ id: string; name: string; models: Array<{ id: string; name: string }> }>
 }
 import { imageTypes, type ImageInput, type ImageRef } from './images'
 import { HarnessAPI } from './api'
+import { decodeSettingsCatalog } from './settings'
 import type {
   ConversationSnapshot,
-  BoundDefinition,
-  BoundDefinitionDraft,
-  BoundDefinitionValue,
-  BoundExtensionsValue,
-  BoundListValue,
-  BoundToolsValue,
   CredentialsDescribeValue,
   HostDescription,
   MessageRow,
@@ -26,6 +21,8 @@ import type {
   SessionListValue,
   SessionSummary,
   StreamDraft,
+  WorkspaceListValue,
+  WorkspaceView,
 } from './types'
 import { isRecord, recordBoolean, recordString } from './types'
 import type { Locale, MessageKey, Translator } from './i18n'
@@ -47,18 +44,10 @@ const initialSnapshot: ConversationSnapshot = {
   onlineDownlinks: 0,
   composerState: 'composer.connecting',
   credentialLoaded: false,
-  boundDefinitionsLoaded: false,
-  boundDefinitions: [],
-  boundToolsState: 'idle',
-  boundTools: [],
-  boundExtensionsState: 'idle',
-  boundExtensions: [],
 }
 
 const historyPageMessages = 20
 const sessionListPageSize = 50
-
-export const DEEPSEEK_CREDENTIAL_REF = 'DEEPSEEK_API_KEY'
 
 export class ConversationStore {
   readonly #subscribers = new Set<Subscriber>()
@@ -68,6 +57,7 @@ export class ConversationStore {
   #value = initialSnapshot
   #selectionVersion = 0
   #sessionListVersion = 0
+  #credentialVersion = 0
   #toastTimer?: number
   #started = false
 
@@ -95,12 +85,11 @@ export class ConversationStore {
       const host = await this.#api.call<HostDescription>('host.describe', {})
       this.#patch({ host, composerState: 'composer.syncingSessions' })
       // Auxiliary configuration must not gate Session history or the composer.
-      void this.refreshCredential().catch(error => this.#fail(error))
-      void this.refreshBoundDefinitions().catch(error => this.#fail(error))
+      void this.refreshCredential().catch(() => { /* refreshCredential reports the failure. */ })
       this.#api.connect()
       await this.refreshSessions()
       if (this.#value.sessions.length === 0) await this.createSession()
-      else await this.selectSession(this.#value.sessions[0].sessionId)
+      else await this.selectSession((this.#value.sessions.find(entry => entry.parentSessionId === undefined && entry.origin !== 'subagent') ?? this.#value.sessions[0]).sessionId)
       this.#patch({ phase: 'ready' })
     } catch (error) {
       this.#fail(error, true)
@@ -120,7 +109,9 @@ export class ConversationStore {
     })
     if (listVersion !== this.#sessionListVersion) return
     const sessions = [...(result.items ?? [])]
-      .filter(item => item.origin !== 'subagent')
+    // A selected older Session may be outside the first sidebar page.
+    const selected = this.currentSession()
+    if (selected !== undefined && !sessions.some(item => item.sessionId === selected.sessionId)) sessions.push(selected)
     this.#patch({
       sessions,
       nextSessionCursor: result.nextCursor,
@@ -139,7 +130,7 @@ export class ConversationStore {
         limit: sessionListPageSize,
       })
       if (listVersion !== this.#sessionListVersion) return
-      const appended = (result.items ?? []).filter(item => item.origin !== 'subagent')
+      const appended = result.items ?? []
       this.#patch({
         sessions: appendSessions(this.#value.sessions, appended),
         nextSessionCursor: result.nextCursor,
@@ -154,110 +145,45 @@ export class ConversationStore {
   }
 
   async refreshCredential(): Promise<void> {
-    const result = await this.#api.call<CredentialsDescribeValue>('credentials.describe', {
-      refs: [DEEPSEEK_CREDENTIAL_REF],
-    })
-    this.#patch({ credential: result.credentials[DEEPSEEK_CREDENTIAL_REF], credentialLoaded: true })
+    const version = ++this.#credentialVersion
+    this.#patch({ credentialLoaded: false, credential: undefined, credentialRef: undefined, credentialPendingRestart: false })
+    try {
+      const catalog = decodeSettingsCatalog(await this.#api.call('settings.describe', {}))
+      const provider = catalog.namespaces.find(group => group.ns === 'llmprovider' && group.name === 'deepseek')
+      if (provider?.value == null) throw new Error(this.#translateText('settings.loadFailure'))
+      const reference = provider.value.apiKeyEnv ?? 'DEEPSEEK_API_KEY'
+      if (typeof reference !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(reference)) {
+        throw new Error(this.#translateText('settings.loadFailure'))
+      }
+      const result = await this.#api.call<CredentialsDescribeValue>('credentials.describe', { refs: [reference] })
+      if (version !== this.#credentialVersion) return
+      const credential = result.credentials[reference]
+      if (credential === undefined) throw new Error(this.#translateText('settings.keyFailure'))
+      this.#patch({ credential, credentialRef: reference, credentialLoaded: true, credentialPendingRestart: provider.pendingRestart === true })
+    } catch (error) {
+      if (version === this.#credentialVersion) this.#fail(error)
+      throw error
+    }
   }
 
   async saveCredential(value: string): Promise<void> {
     try {
-      await this.#api.call<unknown>('credentials.set', { ref: DEEPSEEK_CREDENTIAL_REF, value })
+      const ref = this.#value.credentialRef
+      if (!this.#value.credentialLoaded || ref === undefined) throw new Error(this.#translateText('settings.keyFailure'))
+      await this.#api.call<unknown>('credentials.set', { ref, value })
       await this.refreshCredential()
     } catch (error) {
-    this.#fail(error)
-    throw error
-  }
+      this.#fail(error)
+      throw error
+    }
   }
 
   async unsetCredential(): Promise<void> {
     try {
-      await this.#api.call<unknown>('credentials.unset', { ref: DEEPSEEK_CREDENTIAL_REF })
+      const ref = this.#value.credentialRef
+      if (!this.#value.credentialLoaded || ref === undefined) throw new Error(this.#translateText('settings.keyFailure'))
+      await this.#api.call<unknown>('credentials.unset', { ref })
       await this.refreshCredential()
-    } catch (error) {
-      this.#fail(error)
-      throw error
-  }
-  }
-
-  async refreshBoundDefinitions(): Promise<void> {
-    const result = await this.#api.call<BoundListValue>('bound.list', {})
-    this.#patch({
-      boundDefinitions: result.definitions ?? [],
-      boundDefinitionsLoaded: true,
-    })
-  }
-
-  async refreshBoundTools(): Promise<void> {
-    if (this.#value.boundToolsState === 'loading') return
-    this.#patch({
-      boundToolsState: 'loading',
-      boundToolsError: undefined,
-    })
-    try {
-      const result = await this.#api.call<BoundToolsValue>('bound.tools', {})
-      this.#patch({
-        boundTools: result.tools ?? [],
-        boundToolsState: 'ready',
-        boundToolsError: undefined,
-      })
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      this.#patch({
-        boundToolsState: 'failed',
-        boundToolsError: message,
-      })
-      console.error(error)
-    }
-  }
-
-  async refreshBoundExtensions(): Promise<void> {
-    if (this.#value.boundExtensionsState === 'loading') return
-    this.#patch({
-      boundExtensionsState: 'loading',
-      boundExtensionsError: undefined,
-    })
-    try {
-      const result = await this.#api.call<BoundExtensionsValue>('bound.extensions', {})
-      this.#patch({
-        boundExtensions: result.extensions ?? [],
-        boundExtensionsState: 'ready',
-        boundExtensionsError: undefined,
-      })
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      this.#patch({
-        boundExtensionsState: 'failed',
-        boundExtensionsError: message,
-      })
-      console.error(error)
-    }
-  }
-
-  async createBoundDefinition(draft: BoundDefinitionDraft): Promise<BoundDefinition> {
-    try {
-      const result = await this.#api.call<BoundDefinitionValue>('bound.create', {
-        definition: draft,
-      })
-      await this.refreshBoundDefinitions()
-      return result.definition
-    } catch (error) {
-      this.#fail(error)
-      throw error
-    }
-  }
-
-  async replaceBoundDefinition(
-    expectedRevision: number,
-    draft: BoundDefinitionDraft,
-  ): Promise<BoundDefinition> {
-    try {
-      const result = await this.#api.call<BoundDefinitionValue>('bound.replace', {
-        expectedRevision,
-        definition: draft,
-      })
-      await this.refreshBoundDefinitions()
-      return result.definition
     } catch (error) {
       this.#fail(error)
       throw error
@@ -266,6 +192,7 @@ export class ConversationStore {
 
   async createSession(): Promise<void> {
     if (this.#value.creatingSession) return
+    const cwd = this.currentSession()?.cwd ?? this.#value.host?.cwd
     const previousSessionId = this.#value.currentSessionId
     const previousComposerState = this.#value.composerState
     const creationSelectionVersion = ++this.#selectionVersion
@@ -276,7 +203,9 @@ export class ConversationStore {
     })
     let created: SessionCreateValue
     try {
-      const payload = this.#value.host?.cwd ? { cwd: this.#value.host.cwd } : {}
+      const listing = previousSessionId === undefined || cwd === undefined ? undefined : await this.listWorkspaces()
+      const workspace = listing?.items.find(item => item.path === cwd)
+      const payload = workspace !== undefined ? { workspaceId: workspace.workspaceId } : cwd ? { cwd } : {}
       created = await this.#api.call<SessionCreateValue>('session.create', payload)
     } catch (error) {
       if (this.#selectionVersion === creationSelectionVersion) {
@@ -294,7 +223,7 @@ export class ConversationStore {
       updatedAt: Date.now(),
       running: false,
       blank: true,
-      cwd: this.#value.host?.cwd,
+      cwd,
     })
     this.#patch({ sessions, creatingSession: false })
     if (this.#selectionVersion === creationSelectionVersion) {
@@ -304,6 +233,75 @@ export class ConversationStore {
       await Promise.all([select, refresh])
     } else {
       await this.refreshSessions().catch(error => this.#fail(error))
+    }
+  }
+
+  listWorkspaces(signal?: AbortSignal): Promise<WorkspaceListValue> {
+    return this.#api.call('workspace.list', {}, signal)
+  }
+
+  async pickWorkspace(signal: AbortSignal): Promise<void> {
+    try {
+      const path = await this.#api.call<string | null>('directoryPicker.pick', {}, signal)
+      if (signal.aborted || path === null) return
+      await this.openWorkspace({ path }, signal)
+    } catch (error) {
+      if (!signal.aborted) this.#fail(error)
+      throw error
+    }
+  }
+
+  // Directory selection navigates to another Session; it never mutates a Header.
+  async openWorkspace(target: { workspaceId: string } | { path: string }, signal?: AbortSignal): Promise<void> {
+    if (this.#value.creatingSession) return
+    const selectionVersion = ++this.#selectionVersion
+    this.#patch({ creatingSession: true })
+    try {
+      const registered = 'path' in target
+        ? await this.#api.call<{ workspace: WorkspaceView }>('workspace.create', target, signal)
+        : undefined
+      const identifier = registered?.workspace.workspaceId ?? ('workspaceId' in target ? target.workspaceId : undefined)
+      const listing = await this.listWorkspaces(signal)
+      const workspace = listing.items.find(item => item.workspaceId === identifier)
+      if (workspace === undefined) throw new Error(this.#translateText('workspace.notFound'))
+      if (signal?.aborted || selectionVersion !== this.#selectionVersion || this.currentSession()?.cwd === workspace.path) return
+
+      const members = new Set(workspace.sessionIds)
+      const archived = new Set(listing.archivedSessionIds)
+      let candidate: SessionSummary | undefined
+      let cursor: string | undefined
+      do {
+        const page = await this.#api.call<SessionListValue>('session.list', {
+          limit: sessionListPageSize,
+          ...(cursor === undefined ? {} : { cursor }),
+        }, signal)
+        if (signal?.aborted || selectionVersion !== this.#selectionVersion) return
+        candidate = page.items.find(item =>
+          members.has(item.sessionId) &&
+          !archived.has(item.sessionId) &&
+          item.cwd === workspace.path &&
+          item.blank &&
+          !item.running &&
+          item.origin !== 'subagent',
+        )
+        cursor = page.nextCursor
+      } while (candidate === undefined && cursor !== undefined && members.size > 0)
+
+      if (candidate === undefined) {
+        const created = await this.#api.call<SessionCreateValue>('session.create', { workspaceId: workspace.workspaceId }, signal)
+        candidate = {
+          sessionId: created.sessionId,
+          cwd: workspace.path,
+          updatedAt: Date.now(),
+          running: false,
+          blank: true,
+        }
+      }
+      if (signal?.aborted || selectionVersion !== this.#selectionVersion) return
+      this.#patch({ sessions: prependSession(this.#value.sessions, candidate) })
+      await this.selectSession(candidate.sessionId)
+    } finally {
+      this.#patch({ creatingSession: false })
     }
   }
 
@@ -399,8 +397,8 @@ export class ConversationStore {
     this.#patch({ localTitles, composerState: 'composer.queued' })
     try {
       if (pictures.length > 0) {
-        const catalog = await this.#api.call<{ current: { provider: string; model: string } }>('session.models', { sessionId })
-        if (catalog.current.model !== 'deepseek-v4-flash-vision-exp') {
+        const catalog = await this.#api.call<{ current: { provider: string; model: string } | null }>('session.models', { sessionId })
+        if (catalog.current?.model !== 'deepseek-v4-flash-vision-exp') {
           throw new Error(this.#translateText('composer.switchVision'))
         }
       }
@@ -583,6 +581,10 @@ export class ConversationStore {
     if (!isRecord(payload)) return
     const frameType = recordString(payload, 'type')
     if (frameType === 'host/session-added' || frameType === 'host/session-removed') {
+      if (frameType === 'host/session-removed' && recordString(payload, 'sessionId') === this.#value.currentSessionId) {
+        ++this.#selectionVersion
+        this.#patch({ currentSessionId: undefined })
+      }
       void this.refreshSessions().catch(error => this.#fail(error))
       return
     }

@@ -43,7 +43,7 @@ func TestSchedulerDistinguishesUnconfirmedInvocationFromBodyFailure(t *testing.T
 			if err != nil {
 				t.Fatal(err)
 			}
-			coordinator, err := NewScheduler([]tools.Descriptor{definition.Describe()}, Policies{}, endpoint)
+			coordinator, err := NewScheduler([]tools.Descriptor{definition.Describe()}, endpoint)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -53,11 +53,15 @@ func TestSchedulerDistinguishesUnconfirmedInvocationFromBodyFailure(t *testing.T
 				Name:      "missing",
 				SessionID: "conversation",
 				Arguments: []byte(`{}`),
-			})
+			}, Policies{},
+			)
 			if err != nil {
 				t.Fatal(err)
 			}
-			dispatched, err := coordinator.dispatch(prepared.Execution)
+			dispatched, err := (&Call{
+				scheduler:   coordinator,
+				preparation: prepared,
+			}).dispatchBody()
 			if err != nil || dispatched.Result == nil || !dispatched.Result.Failed() || endpoint.calls != 0 {
 				t.Fatalf("unknown tool reached endpoint: %+v, %v", dispatched, err)
 			}
@@ -66,11 +70,15 @@ func TestSchedulerDistinguishesUnconfirmedInvocationFromBodyFailure(t *testing.T
 				Name:      toolaskuser.Name,
 				SessionID: "conversation",
 				Arguments: []byte(`{"questions":[{"id":"q","question":"Continue?"}]}`),
-			})
+			}, Policies{},
+			)
 			if err != nil {
 				t.Fatal(err)
 			}
-			dispatched, err = coordinator.dispatch(prepared.Execution)
+			dispatched, err = (&Call{
+				scheduler:   coordinator,
+				preparation: prepared,
+			}).dispatchBody()
 			if endpoint.calls != 1 {
 				t.Fatal("valid call was not delivered")
 			}
@@ -89,7 +97,8 @@ func TestSchedulerDistinguishesUnconfirmedInvocationFromBodyFailure(t *testing.T
 					Name:      toolaskuser.Name,
 					SessionID: "conversation",
 					Arguments: []byte(`{"questions":[{"id":"q","question":"Continue?"}]}`),
-				})
+				}, Policies{},
+				)
 				if failure != nil {
 					t.Fatal(failure)
 				}

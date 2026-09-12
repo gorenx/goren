@@ -5,11 +5,13 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
 
 	"github.com/gorenx/goren/llm"
+	"github.com/gorenx/goren/mcpclient"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/tools"
 )
@@ -30,9 +32,22 @@ type Policy struct {
 // Catalog is one source's or Session's unmerged tool configuration. Policy-only
 // entries override inherited tools without copying their schemas.
 type Catalog struct {
-	Schemas []llm.ToolSchema
-	// Restriction intersects inherited membership. Nil Allow is unrestricted;
-	// a non-nil empty Allow admits no inherited tool.
+	// InheritGlobal merges global schemas, flags and policies into this Session.
+	// False selects only this catalog; an explicitly configured empty catalog
+	// has no tools. Unconfigured Sessions use global tools. Global sources must
+	// leave this false because they do not inherit other sources.
+	InheritGlobal bool
+	Schemas       []llm.ToolSchema
+	// Required names tools installed by the owning capability that user selection must retain.
+	Required []string
+	// MCP contains connection definitions. Each Runtime opens its own connections;
+	// Registry never stores live transports or discovered Provider identities here.
+	MCP []mcpclient.Config
+	// ProviderIDs identifies replaceable implementations by canonical tool name.
+	// Global sources and independent Sessions may bind their own schemas.
+	ProviderIDs map[string]tools.ProviderID
+	// Restriction filters the resulting membership. Nil Allow is unrestricted;
+	// a non-nil empty Allow admits no tool.
 	Restriction *ToolRestriction
 	// Policies maps a canonical tool name to explicitly configured policy fields.
 	// For example, a false value at *Policies["read_file"].Visible hides that tool after merging.
@@ -52,7 +67,9 @@ func (restriction ToolRestriction) Clone() ToolRestriction {
 	}
 }
 
-// Configuration preserves global and Session values separately for Runtime merging.
+// Configuration separates the selected source catalog from Session overrides.
+// Global is the Runtime base: shared sources for ordinary Sessions, or the
+// explicitly supplied complete catalog for independent Sessions.
 type Configuration struct {
 	Global Catalog
 	Custom Catalog
@@ -64,15 +81,19 @@ type Registry struct {
 	// sources maps a global source ID (e.g. "local" or "mcp:docs") to that
 	// source's complete schema and policy set. Values never contain workers.
 	sources map[string]Catalog
-	// sessions maps a Session ID (e.g. "session-1") to only its custom schemas
-	// and policy fields. Global values are not copied into these entries.
+	// sessions maps a Session ID (e.g. "session-1") to its supplied catalog.
+	// Catalogs with InheritGlobal contain overrides; others are complete.
 	sessions map[session.SessionID]Catalog
 }
 
-// RegisterSource replaces a complete global source. Names cannot collide across sources.
+// RegisterSource replaces a complete global source. Schema names cannot collide
+// with other sources or with additions in Sessions inheriting global tools.
 func (owner *Registry) RegisterSource(name string, input Catalog) error {
 	if strings.TrimSpace(name) == "" || strings.TrimSpace(name) != name {
 		return errors.New("tools: source name is required")
+	}
+	if input.InheritGlobal {
+		return errors.New("tools: global sources cannot inherit global configuration")
 	}
 	captured, err := snapshotCatalog(input)
 	if err != nil {
@@ -95,6 +116,13 @@ func (owner *Registry) RegisterSource(name string, input Catalog) error {
 			}
 		}
 	}
+	for _, selected := range owner.sessions {
+		if selected.InheritGlobal {
+			if err := rejectSchemaConflicts(captured, selected); err != nil {
+				return err
+			}
+		}
+	}
 	err = assignVersions(&captured, owner.sources[name])
 	if err != nil {
 		return err
@@ -109,14 +137,33 @@ func (owner *Registry) RegisterSource(name string, input Catalog) error {
 // RemoveSource withdraws its schemas and policies together; runtimes decide how to apply it.
 func (owner *Registry) RemoveSource(name string) { delete(owner.sources, name) }
 
-// ConfigureSession replaces only custom values; inherited schemas are never copied here.
+// ConfigureSession replaces Session values. InheritGlobal retains global tools
+// with distinct schema additions and policy overrides; otherwise the catalog is
+// a complete selection.
 func (owner *Registry) ConfigureSession(identifier session.SessionID, input Catalog) error {
 	if identifier == "" {
 		return errors.New("tools: Session identity is required")
 	}
+	if input.InheritGlobal && len(input.ProviderIDs) != 0 {
+		return errors.New("tools: inherited Session configuration cannot select Providers")
+	}
 	captured, err := snapshotCatalog(input)
 	if err != nil {
 		return err
+	}
+	if captured.InheritGlobal {
+		for _, source := range owner.sources {
+			if err := rejectSchemaConflicts(source, captured); err != nil {
+				return err
+			}
+		}
+	}
+	if !captured.InheritGlobal && len(captured.MCP) == 0 {
+		for name := range captured.Policies {
+			if !slices.ContainsFunc(captured.Schemas, func(entry llm.ToolSchema) bool { return entry.Name == name }) {
+				return fmt.Errorf("tools: independent policy %q requires an owned schema", name)
+			}
+		}
 	}
 	err = assignVersions(&captured, owner.sessions[identifier])
 	if err != nil {
@@ -136,23 +183,63 @@ func (owner *Registry) RemoveSession(identifier session.SessionID) {
 
 // Read returns detached unmerged values. Global names have deterministic order.
 func (owner *Registry) Read(identifier session.SessionID) Configuration {
-	combined := Catalog{Policies: make(map[string]Policy)}
+	selected, configured := owner.sessions[identifier]
+	if configured && !selected.InheritGlobal {
+		captured := selected.Clone()
+		restriction := captured.Restriction
+		captured.Restriction = nil
+		return Configuration{
+			Global: captured,
+			Custom: Catalog{
+				Restriction: restriction,
+			},
+		}
+	}
+	combined := owner.Catalog()
+	if !configured {
+		selected.InheritGlobal = true
+	}
+	return Configuration{
+		Global: combined,
+		Custom: selected.Clone(),
+	}
+}
+
+// Catalog returns detached registered schemas, Provider bindings and source
+// policies. It excludes user flags and Session configuration, so a consumer can
+// apply a previously selected Settings snapshot without reading newer overrides.
+func (owner *Registry) Catalog() Catalog {
+	combined := Catalog{
+		Policies:    make(map[string]Policy),
+		ProviderIDs: make(map[string]tools.ProviderID),
+	}
 	for _, entries := range owner.sources {
 		combined.Schemas = append(combined.Schemas, entries.Schemas...)
+		combined.Required = append(combined.Required, entries.Required...)
+		combined.MCP = append(combined.MCP, entries.Clone().MCP...)
+		maps.Copy(combined.ProviderIDs, entries.ProviderIDs)
 		for name, policy := range entries.Policies {
 			combined.Policies[name] = policy
 		}
 	}
-	sort.Slice(combined.Schemas, func(left int, right int) bool { return combined.Schemas[left].Name < combined.Schemas[right].Name })
-	return Configuration{
-		Global: combined.Clone(),
-		Custom: owner.sessions[identifier].Clone(),
-	}
+	sort.Slice(
+		combined.Schemas,
+		func(left int, right int) bool {
+			return combined.Schemas[left].Name < combined.Schemas[right].Name
+		},
+	)
+	return combined.Clone()
 }
 
 // Clone detaches schema bytes and optional values from caller mutation.
 func (input Catalog) Clone() Catalog {
+	input.Required = slices.Clone(input.Required)
+	input.MCP = slices.Clone(input.MCP)
+	for index := range input.MCP {
+		input.MCP[index].Args = slices.Clone(input.MCP[index].Args)
+	}
 	input.Schemas = slices.Clone(input.Schemas)
+	input.ProviderIDs = maps.Clone(input.ProviderIDs)
 	if input.Restriction != nil {
 		input.Restriction = &ToolRestriction{
 			Allow: slices.Clone(input.Restriction.Allow),
@@ -185,6 +272,18 @@ func (input Catalog) Clone() Catalog {
 
 func snapshotCatalog(input Catalog) (Catalog, error) {
 	captured := input.Clone()
+	servers := make(map[string]struct{}, len(captured.MCP))
+	for index, definition := range captured.MCP {
+		configuration, err := definition.Validate()
+		if err != nil {
+			return Catalog{}, err
+		}
+		if _, found := servers[configuration.ServerName]; found {
+			return Catalog{}, errors.New("tools: duplicate MCP connection name")
+		}
+		servers[configuration.ServerName] = struct{}{}
+		captured.MCP[index] = configuration
+	}
 	// names maps each validated schema name to true to reject duplicate entries.
 	names := make(map[string]bool, len(captured.Schemas))
 	for index := range captured.Schemas {
@@ -202,9 +301,26 @@ func snapshotCatalog(input Catalog) (Catalog, error) {
 		entry.Parameters = parameters
 		names[entry.Name] = true
 	}
+	required := make(map[string]struct{}, len(captured.Required))
+	for _, name := range captured.Required {
+		if !names[name] {
+			return Catalog{}, errors.New("tools: required tool must have an owned schema")
+		}
+		if _, exists := required[name]; exists {
+			return Catalog{}, errors.New("tools: duplicate required tool")
+		}
+		required[name] = struct{}{}
+	}
 	for name := range captured.Policies {
 		if !validName(name) {
 			return Catalog{}, fmt.Errorf("tools: invalid policy name %q", name)
+		}
+	}
+	for name, identifier := range captured.ProviderIDs {
+		if !names[name] ||
+			identifier == "" ||
+			strings.TrimSpace(string(identifier)) != string(identifier) {
+			return Catalog{}, errors.New("tools: Provider identity requires an owned schema and a nonempty value")
 		}
 	}
 	return captured, nil
@@ -233,4 +349,82 @@ func assignVersions(input *Catalog, previous Catalog) error {
 		}
 	}
 	return nil
+}
+
+// rejectSchemaConflicts checks registrations that coexist in one Session.
+// Updating flags for an existing name does not register another schema.
+func rejectSchemaConflicts(left, right Catalog) error {
+	names := make(map[string]struct{}, len(left.Schemas))
+	for _, entry := range left.Schemas {
+		names[entry.Name] = struct{}{}
+	}
+	for _, entry := range right.Schemas {
+		if _, found := names[entry.Name]; found {
+			return fmt.Errorf("tools: duplicate tool schema %q", entry.Name)
+		}
+	}
+	return nil
+}
+
+// Select projects a complete tool selection onto registered capability definitions.
+// It retains required tools, Provider bindings and execution guards without writing
+// the selected flags or MCP connections back into the Registry.
+func (scoped Configuration) Select(
+	installed Catalog,
+	flags map[string]tools.Config,
+	connections []mcpclient.Config,
+) (Configuration, error) {
+	selected := installed.Clone()
+	if !scoped.Custom.InheritGlobal {
+		selected = Catalog{
+			Required:    slices.Clone(scoped.Global.Required),
+			Policies:    make(map[string]Policy),
+			ProviderIDs: make(map[string]tools.ProviderID),
+		}
+		names := slices.Clone(selected.Required)
+		for name := range flags {
+			if slices.Contains(selected.Required, name) {
+				return Configuration{}, fmt.Errorf("tools: tool %q is required by its capability", name)
+			}
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			source := scoped.Global
+			index := slices.IndexFunc(source.Schemas, func(entry llm.ToolSchema) bool { return entry.Name == name })
+			if index < 0 {
+				source = installed
+				index = slices.IndexFunc(source.Schemas, func(entry llm.ToolSchema) bool { return entry.Name == name })
+			}
+			if index < 0 {
+				if len(connections) != 0 {
+					continue
+				}
+				return Configuration{}, fmt.Errorf("tools: selected tool %q is not registered", name)
+			}
+			selected.Schemas = append(selected.Schemas, source.Schemas[index])
+			selected.Policies[name] = source.Policies[name]
+			if identifier := source.ProviderIDs[name]; identifier != "" {
+				selected.ProviderIDs[name] = identifier
+			}
+		}
+	}
+	selected.MCP = connections
+	if selected.Policies == nil {
+		selected.Policies = make(map[string]Policy)
+	}
+	for name, flags := range flags {
+		if slices.Contains(selected.Required, name) {
+			return Configuration{}, fmt.Errorf("tools: tool %q is required by its capability", name)
+		}
+		enabled, visible := flags.Resolve()
+		policy := selected.Policies[name]
+		policy.Enabled = &enabled
+		policy.Visible = &visible
+		selected.Policies[name] = policy
+	}
+	return Configuration{
+		Global: selected.Clone(),
+		Custom: scoped.Custom.Clone(),
+	}, nil
 }

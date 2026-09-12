@@ -19,6 +19,7 @@ type Agent struct {
 	system     goakt.ActorSystem
 	endpoint   *goakt.GrainIdentity
 	identifier session.SessionID
+	role       agent.Role
 	parentID   *session.SessionID
 	creationID string
 	timeout    time.Duration
@@ -38,6 +39,7 @@ func NewAgent(system goakt.ActorSystem, endpoint *goakt.GrainIdentity, membershi
 		system:     system,
 		endpoint:   endpoint,
 		identifier: membership.ID,
+		role:       membership.Role,
 		parentID:   parent,
 		creationID: creationID,
 		timeout:    timeout,
@@ -46,6 +48,9 @@ func NewAgent(system goakt.ActorSystem, endpoint *goakt.GrainIdentity, membershi
 
 // ID returns the explicit business identity, never a parsed framework name.
 func (subject *Agent) ID() session.SessionID { return subject.identifier }
+
+// Role returns the admitted creation's immutable Agent role.
+func (subject *Agent) Role() agent.Role { return subject.role }
 
 // ParentID returns current lifetime ownership, independent of historical origin.
 func (subject *Agent) ParentID() *session.SessionID {

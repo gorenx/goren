@@ -4,7 +4,20 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/coder/websocket"
+	agentregistry "github.com/gorenx/goren/agent/registry"
+	settingsapi "github.com/gorenx/goren/apiproxy/settings"
+	"github.com/gorenx/goren/connection"
+	"github.com/gorenx/goren/llm/deepseek"
+	"github.com/gorenx/goren/mcpclient"
+	"github.com/gorenx/goren/session"
+	usersettings "github.com/gorenx/goren/settings"
+	"github.com/gorenx/goren/tools"
+	toolruntime "github.com/gorenx/goren/tools/runtime"
+	runtimeactor "github.com/gorenx/goren/tools/runtime/actor"
+	goakt "github.com/tochemey/goakt/v4/actor"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -12,13 +25,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/coder/websocket"
-	"github.com/gorenx/goren/connection"
-	"github.com/gorenx/goren/llm/deepseek"
-	"github.com/gorenx/goren/mcpclient"
-	registryactor "github.com/gorenx/goren/tools/registry/actor"
-	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
 func TestHTTPMCPToolActorElicitationAndCatalogChanges(t *testing.T) {
@@ -161,22 +167,24 @@ func testHTTPMCPAgent(t *testing.T, dynamic bool) {
 	}()
 	callHTTP(t, ctx, process, "credentials.set", json.RawMessage(`{"ref":"DEEPSEEK_API_KEY","value":"test-key"}`))
 	callHTTP(t, ctx, process, "session.create", json.RawMessage(`{"sessionId":"mcp-agent"}`))
+	lifetime := serverReady(t, ctx, process, "mcp-agent").Creation.CreationID
 	if dynamic {
-		initial := callHTTP(t, ctx, process, "mcp.list", json.RawMessage(`{}`))
+		initial := callHTTP(t, ctx, process, "mcp.list", json.RawMessage(`{"sessionId":"mcp-agent"}`))
 		if string(initial) != "[]" {
 			t.Fatalf("unexpected initial connections: %s", initial)
 		}
-		request, err := json.Marshal(map[string]string{
-			"serverName": "fixture",
-			"url":        external.URL,
+		view := settingsHTTP(t, ctx, process, "settings.updateMCP", settingsapi.UpdateMCPRequest{
+			Name: "fixture",
+			Config: usersettings.MCPConfig{
+				Enabled:    true,
+				Connection: mcpHTTPConfig("fixture", external.URL),
+			},
 		})
-		if err != nil {
-			t.Fatal(err)
+		if view.Applies != settingsapi.ApplyAgentRestart {
+			t.Fatalf("MCP configuration was not published: %+v", view)
 		}
-		connected := callHTTP(t, ctx, process, "mcp.connect", request)
-		if !bytes.Contains(connected, []byte(`"status":"connected"`)) {
-			t.Fatalf("MCP did not connect: %s", connected)
-		}
+		lifetime = awaitSettingsRestart(t, ctx, process, "mcp-agent", lifetime).Creation.CreationID
+
 	}
 	feed, _, err := websocket.Dial(ctx, "ws://"+process.Address()+connection.MuxEventsPath, nil)
 	if err != nil {
@@ -209,35 +217,7 @@ func testHTTPMCPAgent(t *testing.T, dynamic bool) {
 	}
 	updated.Store(true)
 	close(changed)
-	directory, err := goakt.GrainOf[*registryactor.RegistryGrain](ctx, process.system, registryactor.RegistryName, goakt.WithLongLivedGrain())
-	if err != nil {
-		t.Fatal(err)
-	}
-	ticker := time.NewTicker(5 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		payload, err := process.system.AskGrain(ctx, directory, registryactor.ReadConfiguration{
-			SessionID: "mcp-agent",
-		}, time.Second)
-		if err != nil {
-			t.Fatal(err)
-		}
-		configuration := payload.(registryactor.Configuration)
-		found := false
-		for _, entry := range configuration.Value.Global.Schemas {
-			if entry.Name == mcpclient.ToolName("fixture", "replacement") {
-				found = true
-			}
-		}
-		if found {
-			break
-		}
-		select {
-		case <-ticker.C:
-		case <-ctx.Done():
-			t.Fatal("MCP source not refreshed")
-		}
-	}
+	refreshMCP(t, ctx, process, "mcp-agent", mcpclient.ToolName("fixture", "replacement"))
 	callHTTP(t, ctx, process, "session.prompt", json.RawMessage(`{"sessionId":"mcp-agent","mode":"queue","content":[{"type":"text","text":"Call the new MCP tool"}]}`))
 	for {
 		frame := readConversationFrame(t, ctx, feed)
@@ -249,50 +229,354 @@ func testHTTPMCPAgent(t *testing.T, dynamic bool) {
 		t.Fatal("dynamic MCP tool did not complete a real Agent turn")
 	}
 	if dynamic {
-		if _, err := process.mcp.connect(ctx, mcpclient.Config{
-			ServerName: "fixture",
-			Transport:  "streamable-http",
-			URL:        external.URL,
-		}); err == nil {
-			t.Fatal("duplicate server name silently replaced the active connection")
-		}
 		close(terminated)
-		for {
-			listing := callHTTP(t, ctx, process, "mcp.list", json.RawMessage(`{}`))
-			payload, err := process.system.AskGrain(ctx, directory, registryactor.ReadConfiguration{
-				SessionID: "mcp-agent",
-			}, time.Second)
-			if err != nil {
-				t.Fatal(err)
-			}
-			stale := false
-			for _, entry := range payload.(registryactor.Configuration).Value.Global.Schemas {
-				stale = stale || strings.HasPrefix(entry.Name, "mcp_")
-			}
-			if bytes.Contains(listing, []byte(`"status":"failed"`)) && !stale {
-				break
-			}
-			select {
-			case <-ticker.C:
-			case <-ctx.Done():
-				t.Fatal("subscription termination did not withdraw tools and expose failure")
-			}
-		}
+		awaitMCPCondition(t, func() bool {
+			listing := callHTTP(t, ctx, process, "mcp.list", json.RawMessage(`{"sessionId":"mcp-agent"}`))
+			return bytes.Contains(listing, []byte(`"status":"failed"`)) && bytes.Contains(listing, []byte(`"toolCount":0`))
+		})
+		refreshMCP(t, ctx, process, "mcp-agent", "")
 	}
-	callHTTP(t, ctx, process, "mcp.disconnect", json.RawMessage(`{"serverName":"fixture"}`))
-	remaining := callHTTP(t, ctx, process, "mcp.list", json.RawMessage(`{}`))
+	expected := int64(0)
+	if dynamic {
+		expected = 1
+	}
+	view := settingsHTTP(t, ctx, process, "settings.updateMCP", settingsapi.UpdateMCPRequest{
+		Name:             "fixture",
+		ExpectedRevision: expected,
+		Config: usersettings.MCPConfig{
+			Connection: mcpHTTPConfig("fixture", external.URL),
+		},
+	})
+	if view.Applies != settingsapi.ApplyAgentRestart {
+		t.Fatalf("disabled configuration was not published: %+v", view)
+	}
+	awaitSettingsRestart(t, ctx, process, "mcp-agent", lifetime)
+	remaining := callHTTP(t, ctx, process, "mcp.list", json.RawMessage(`{"sessionId":"mcp-agent"}`))
 	if string(remaining) != "[]" {
-		t.Fatalf("connection remained after disconnect: %s", remaining)
+		t.Fatalf("connection remained after applying disabled configuration: %s", remaining)
 	}
-	payload, err := process.system.AskGrain(ctx, directory, registryactor.ReadConfiguration{
-		SessionID: "mcp-agent",
-	}, time.Second)
+
+}
+
+type mcpSource struct {
+	result      string
+	toolName    string
+	entered     chan struct{}
+	release     <-chan struct{}
+	calls       atomic.Int32
+	listens     atomic.Int32
+	closed      atomic.Int32
+	canceled    atomic.Int32
+	unavailable atomic.Bool
+}
+
+func (remote *mcpSource) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
+	var message struct {
+		ID     json.RawMessage `json:"id"`
+		Method string          `json:"method"`
+	}
+	if json.NewDecoder(request.Body).Decode(&message) != nil {
+		writer.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	if remote.unavailable.Load() {
+		writer.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+	writer.Header().Set("Content-Type", "application/json")
+	respond := func(result string) {
+		fmt.Fprintf(writer, `{"jsonrpc":"2.0","id":%s,"result":%s}`, message.ID, result)
+	}
+	switch message.Method {
+	case "server/discover":
+		respond(`{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{"tools":{"listChanged":true}}}`)
+	case "tools/list":
+		name := remote.toolName
+		if name == "" {
+			name = "read"
+		}
+		respond(fmt.Sprintf(`{"resultType":"complete","tools":[{"name":%q,"inputSchema":{"type":"object"}}]}`, name))
+	case "subscriptions/listen":
+		remote.listens.Add(1)
+		defer remote.closed.Add(1)
+		writer.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(writer, "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/subscriptions/acknowledged\",\"params\":{\"notifications\":{\"toolsListChanged\":true},\"_meta\":{\"io.modelcontextprotocol/subscriptionId\":\"sub\"}}}\n\n")
+		writer.(http.Flusher).Flush()
+		<-request.Context().Done()
+	case "tools/call":
+		remote.calls.Add(1)
+		if remote.release != nil {
+			writer.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(writer, ": waiting\n\n")
+			writer.(http.Flusher).Flush()
+			remote.entered <- struct{}{}
+			select {
+			case <-remote.release:
+				fmt.Fprintf(writer, "data: {\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"resultType\":\"complete\",\"content\":[]}}\n\n", message.ID)
+			case <-request.Context().Done():
+				remote.canceled.Add(1)
+			}
+			return
+		}
+		respond(fmt.Sprintf(`{"resultType":"complete","content":[{"type":"text","text":%q}]}`, remote.result))
+	default:
+		writer.WriteHeader(http.StatusBadRequest)
+	}
+}
+
+func TestHTTPMCPReconnectionRebindsExistingSession(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	first := &mcpSource{
+		result: "first endpoint result",
+	}
+	second := &mcpSource{
+		result: "second endpoint result",
+	}
+	firstHTTP := httptest.NewServer(first)
+	defer firstHTTP.Close()
+	secondHTTP := httptest.NewServer(second)
+	defer secondHTTP.Close()
+	name := mcpclient.ToolName("fixture", "read")
+	var modelCalls atomic.Int32
+	modelHTTP := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		var input struct {
+			Messages json.RawMessage `json:"messages"`
+			Tools    json.RawMessage `json:"tools"`
+		}
+		if json.NewDecoder(request.Body).Decode(&input) != nil {
+			t.Error("bad model request")
+			return
+		}
+		step := modelCalls.Add(1)
+		if !bytes.Contains(input.Tools, []byte(name)) {
+			t.Error("MCP tool disappeared during reconnection")
+		}
+		writer.Header().Set("Content-Type", "text/event-stream")
+		if step%2 == 1 {
+			fmt.Fprintf(writer, "data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"read-%d\",\"type\":\"function\",\"function\":{\"name\":%q,\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n", step, name)
+		} else {
+			expected := first.result
+			if step == 4 {
+				expected = second.result
+			}
+			if !bytes.Contains(input.Messages, []byte(expected)) {
+				t.Errorf("endpoint result missing at model call %d", step)
+			}
+			fmt.Fprint(writer, "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"done\"},\"finish_reason\":null}]}\n\ndata: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		}
+		fmt.Fprint(writer, "data: [DONE]\n\n")
+	}))
+	defer modelHTTP.Close()
+	root := t.TempDir()
+	process, err := New(Config{
+		Address:           "127.0.0.1:0",
+		WorkingDirectory:  root,
+		SessionDatabase:   filepath.Join(root, "sessions.sqlite"),
+		WorkspaceDatabase: filepath.Join(root, "workspaces.sqlite"),
+		CredentialsPath:   filepath.Join(root, "credentials.json"),
+		Provider: deepseek.Config{
+			BaseURL: &modelHTTP.URL,
+		},
+		MCP: []mcpclient.Config{
+			{
+				ServerName: "fixture",
+				Transport:  "streamable-http",
+				URL:        firstHTTP.URL,
+			},
+		},
+	}, providerEnvironment{
+		home: root,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, entry := range payload.(registryactor.Configuration).Value.Global.Schemas {
-		if strings.HasPrefix(entry.Name, "mcp_") {
-			t.Fatal("disconnected tools remained in the Agent catalog")
+	if err := process.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := process.Close(context.Background()); err != nil {
+			t.Error(err)
 		}
+	}()
+	callHTTP(t, ctx, process, "credentials.set", json.RawMessage(`{"ref":"DEEPSEEK_API_KEY","value":"test-key"}`))
+	callHTTP(t, ctx, process, "session.create", json.RawMessage(`{"sessionId":"mcp-agent"}`))
+	lifetime := serverReady(t, ctx, process, "mcp-agent").Creation.CreationID
+	feed, _, err := websocket.Dial(ctx, "ws://"+process.Address()+connection.MuxEventsPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer feed.CloseNow()
+	turn := func() {
+		t.Helper()
+		callHTTP(t, ctx, process, "session.prompt", json.RawMessage(`{"sessionId":"mcp-agent","mode":"queue","content":[{"type":"text","text":"Read MCP"}]}`))
+		for {
+			frame := readConversationFrame(t, ctx, feed)
+			if frame.Method == "question/requested" {
+				if !answerHTTP(t, ctx, process, frame.RPCID, json.RawMessage(`{"sessionId":"mcp-agent","answer":{"answers":[{"id":"mcp-consent","selected":["Continue"]}]}}`)).Accepted {
+					t.Fatal("MCP consent rejected")
+				}
+			}
+			if frame.Method == "session/event" && bytes.Contains(frame.Payload, []byte(`"type":"turn/end"`)) {
+				return
+			}
+		}
+	}
+	binding := func() tools.ProviderID {
+		t.Helper()
+		return readMCPRuntime(t, ctx, process, "mcp-agent").ProviderIDs[name]
+	}
+	previous := binding()
+	turn()
+	view := settingsHTTP(t, ctx, process, "settings.updateMCP", settingsapi.UpdateMCPRequest{
+		Name: "fixture",
+		Config: usersettings.MCPConfig{
+			Enabled:    true,
+			Connection: mcpHTTPConfig("fixture", secondHTTP.URL),
+		},
+	})
+	if view.Applies != settingsapi.ApplyAgentRestart {
+		t.Fatal("MCP save omitted automatic restart")
+	}
+	awaitSettingsRestart(t, ctx, process, "mcp-agent", lifetime)
+	turn()
+	current := binding()
+	if current == "" || current == previous {
+		t.Fatal("changed target did not replace the Session's Provider binding")
+	}
+	callHTTP(t, ctx, process, "session.create", json.RawMessage(`{"sessionId":"other-agent"}`))
+	other := readMCPRuntime(t, ctx, process, "other-agent").ProviderIDs[name]
+	if other == current || other == "" {
+		t.Fatal("two Sessions shared a connection Provider")
+	}
+	callHTTP(t, ctx, process, "mcp.retry", json.RawMessage(`{"sessionId":"mcp-agent","serverName":"fixture"}`))
+	if binding() != current || readMCPRuntime(t, ctx, process, "other-agent").ProviderIDs[name] != other {
+		t.Fatal("transport retry changed configured bindings or another Session")
+	}
+	if second.listens.Load() != 3 {
+		t.Fatal("Session-specific retry did not open exactly one transport")
+	}
+	if first.calls.Load() != 1 ||
+		second.calls.Load() != 1 ||
+		modelCalls.Load() != 4 {
+		t.Fatalf("calls first/second/model=%d/%d/%d", first.calls.Load(), second.calls.Load(), modelCalls.Load())
+	}
+}
+
+func mcpHTTPConfig(name, address string) mcpclient.Config {
+	return mcpclient.Config{
+		ServerName: name,
+		Transport:  "streamable-http",
+		URL:        address,
+	}
+}
+
+func awaitMCPCondition(t *testing.T, condition func() bool) {
+	t.Helper()
+	deadline := time.NewTimer(3 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for !condition() {
+		select {
+		case <-ticker.C:
+		case <-deadline.C:
+			t.Fatal("MCP condition did not become true")
+		}
+	}
+}
+
+func mcpRuntime(t *testing.T, ctx context.Context, process *Server, identifier session.SessionID) (*goakt.GrainIdentity, string) {
+	t.Helper()
+	payload, err := process.system.AskGrain(ctx, process.agents, agentregistry.FindAgent{
+		AgentID:   identifier,
+		WaitReady: true,
+	}, 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready := payload.(agentregistry.Ready)
+	if ready.Err != nil {
+		t.Fatal(ready.Err)
+	}
+	address, err := goakt.GrainOf[*runtimeactor.Runtime](ctx, process.system, runtimeactor.RuntimeName(string(identifier)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return address, ready.Creation.CreationID
+}
+
+func readMCPRuntime(t *testing.T, ctx context.Context, process *Server, identifier session.SessionID) toolruntime.Snapshot {
+	t.Helper()
+	address, creation := mcpRuntime(t, ctx, process, identifier)
+	payload, err := process.system.AskGrain(ctx, address, runtimeactor.ReadRuntime{
+		CreationID: creation,
+	}, 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := payload.(runtimeactor.RuntimeView)
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	return result.Snapshot
+}
+
+func refreshMCP(t *testing.T, ctx context.Context, process *Server, identifier session.SessionID, expected string) {
+	t.Helper()
+	address, creation := mcpRuntime(t, ctx, process, identifier)
+	awaitMCPCondition(t, func() bool {
+		payload, err := process.system.AskGrain(ctx, address, runtimeactor.RefreshConfiguration{
+			CreationID: creation,
+			ID:         "test-boundary",
+		}, 3*time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result := payload.(runtimeactor.Definitions)
+		if result.Err != nil {
+			return false
+		}
+		found := ""
+		for _, entry := range result.Value.Schemas {
+			if strings.HasPrefix(entry.Name, "mcp_") {
+				found = entry.Name
+			}
+		}
+		return found == expected
+	})
+}
+
+func TestMCPSettingsValidatesNamesBeforePublication(t *testing.T) {
+	source := mcpSettings{
+		reserved: []mcpclient.Config{
+			{
+				ServerName: "local",
+				Transport:  "stdio",
+				Command:    "fixture",
+			},
+		},
+	}
+	for _, definitions := range [][]mcpclient.Config{
+		{mcpHTTPConfig("local", "http://localhost/mcp")},
+		{mcpHTTPConfig("remote", "http://localhost/mcp"), mcpHTTPConfig("remote", "http://localhost/other")},
+		{{
+			ServerName: "stdio",
+			Transport:  "stdio",
+			Command:    "fixture",
+		}},
+		{mcpHTTPConfig("remote", "file:///tmp/mcp")},
+	} {
+		if err := source.ValidateMCP(t.Context(), definitions); err == nil {
+			t.Fatalf("invalid configuration passed: %+v", definitions)
+		}
+	}
+	if err := source.ValidateMCP(t.Context(), []mcpclient.Config{mcpHTTPConfig("remote", "http://localhost/mcp")}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := source.ApplyMCP(ctx, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled configuration reached publication: %v", err)
 	}
 }

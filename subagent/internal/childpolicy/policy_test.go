@@ -10,7 +10,6 @@ import (
 
 func TestApplyAddsDetachedChildPolicy(t *testing.T) {
 	persona := "review carefully"
-	systemPrompt := "report progress"
 	restriction := &toolregistry.ToolRestriction{
 		Allow: []string{"read"},
 		Deny:  []string{"write"},
@@ -19,14 +18,12 @@ func TestApplyAddsDetachedChildPolicy(t *testing.T) {
 	Apply(
 		PolicySet{
 			Persona:         &persona,
-			SystemPrompt:    &systemPrompt,
 			ToolRestriction: restriction,
 		},
 		&configuration,
 	)
-	if len(configuration.PromptSections) != 2 ||
-		configuration.PromptSections[0].Name != systemprompt.PersonaSection ||
-		configuration.PromptSections[1].Name != boundSystemPromptSection {
+	if len(configuration.PromptSections) != 1 ||
+		configuration.PromptSections[0].Name != systemprompt.PersonaSection {
 		t.Fatalf("prompt sections = %#v", configuration.PromptSections)
 	}
 	if configuration.Tools.Restriction == nil ||

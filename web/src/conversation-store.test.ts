@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ConversationStore } from './conversation-store'
 import type { Translator } from './i18n'
-import type { BoundDefinition, BoundDefinitionDraft, BoundExtensionOption, BoundToolOption, SessionEvent, SessionSummary } from './types'
+import type { SessionEvent, SessionSummary, WorkspaceListValue } from './types'
 import { MockWebSocket } from './test/mock-websocket'
 
 const translate: Translator = (messageKey, values) => {
@@ -24,6 +24,179 @@ describe('ConversationStore', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals()
+  })
+
+  it('retains child Sessions and reads their history and live output independently', async () => {
+    const child = { ...session, sessionId: 'child', parentSessionId: session.sessionId, origin: 'subagent' }
+    const host = installMockHost({ existingSession: true, sessionPages: { first: { items: [child, session] } } })
+    const store = new ConversationStore(translate)
+    await store.start()
+    expect(store.snapshot().currentSessionId).toBe(session.sessionId)
+    expect(store.snapshot().sessions).toContainEqual(child)
+    await store.selectSession('child')
+    expect(host.calls).toContainEqual({ method: 'session.history', payload: { sessionId: 'child', maxMessages: 20 } })
+    const mux = MockWebSocket.instances.find(socket => socket.url.endsWith('/api/events.mux'))!
+    mux.open()
+    mux.receive({ type: 'server-request', rpcId: 'child-output', payload: {
+      type: 'session/event', sessionId: 'child', event: {
+        type: 'assistant/chunk', seq: 3, time: 20,
+        data: { chunk: { type: 'text-delta', text: 'child output' } },
+      },
+    } })
+    expect(store.currentMessages().some(message => message.text === 'child output')).toBe(true)
+    await store.selectSession(session.sessionId)
+    expect(store.currentMessages().some(message => message.text === 'child output')).toBe(false)
+    store.dispose()
+  })
+
+  it.each(['/b', null])('uses the native folder picker result %s without submitting a prompt', async pickedPath => {
+    const host = installMockHost({ existingSession: true, workspaces: workspaceListing(), pickedPath })
+    const store = new ConversationStore(translate)
+    await store.start()
+    await store.pickWorkspace(new AbortController().signal)
+    expect(host.calls).toContainEqual({ method: 'directoryPicker.pick', payload: {} })
+    expect(host.methods).not.toContain('session.prompt')
+    if (pickedPath === null) {
+      expect(host.methods).not.toContain('workspace.create')
+      expect(host.methods).not.toContain('session.create')
+      expect(store.snapshot().currentSessionId).toBe(session.sessionId)
+    } else {
+      expect(host.calls).toContainEqual({ method: 'workspace.create', payload: { path: '/b' } })
+      expect(store.currentSession()?.cwd).toBe('/b')
+    }
+    store.dispose()
+  })
+
+  it('finds a reusable workspace Session beyond the first page and keeps its directory after sidebar refresh', async () => {
+    const blank = { ...session, sessionId: 'blank-b', cwd: '/b' }
+    const rejected = [
+      { ...blank, sessionId: 'archived' },
+      { ...blank, sessionId: 'used', blank: false },
+      { ...blank, sessionId: 'running', running: true },
+      { ...blank, sessionId: 'child', origin: 'subagent' },
+      { ...blank, sessionId: 'mismatch', cwd: '/a' },
+    ]
+    const host = installMockHost({
+      existingSession: true,
+      workspaces: { items: [{ workspaceId: 'b', path: '/b', title: 'B', sessionIds: [...rejected.map(item => item.sessionId), blank.sessionId] }], archivedSessionIds: ['archived'] },
+      sessionPages: {
+        first: { items: [session, ...rejected, { ...blank, sessionId: 'unaccounted' }], nextCursor: 'older' },
+        older: { items: [blank] },
+      },
+    })
+    const store = new ConversationStore(translate)
+    await store.start()
+    await store.openWorkspace({ workspaceId: 'b' })
+    expect(store.snapshot().currentSessionId).toBe('blank-b')
+    expect(host.methods).not.toContain('session.create')
+    expect(host.calls).toContainEqual({ method: 'session.list', payload: { limit: 50, cursor: 'older' } })
+    expect(host.calls).toContainEqual({ method: 'session.history', payload: { sessionId: 'blank-b', maxMessages: 20 } })
+    await store.refreshSessions()
+    expect(store.currentSession()?.cwd).toBe('/b')
+    const reads = host.methods.filter(method => method === 'session.list').length
+    await store.openWorkspace({ workspaceId: 'b' })
+    expect(host.methods.filter(method => method === 'session.list')).toHaveLength(reads)
+    store.dispose()
+  })
+
+  it('registers a server path and creates with the canonical Workspace identity, then inherits it for new conversations', async () => {
+    const host = installMockHost({ existingSession: true, workspaces: workspaceListing() })
+    const store = new ConversationStore(translate)
+    await store.start()
+    await store.openWorkspace({ path: '/symlink-b' })
+    expect(host.calls).toContainEqual({ method: 'workspace.create', payload: { path: '/symlink-b' } })
+    expect(host.calls).toContainEqual({ method: 'session.create', payload: { workspaceId: 'b' } })
+    expect(store.currentSession()?.cwd).toBe('/b')
+    expect(store.snapshot().sessions.find(item => item.sessionId === session.sessionId)).toEqual(session)
+    await store.createSession()
+    expect(host.calls.filter(call => call.method === 'session.create')).toEqual([
+      { method: 'session.create', payload: { workspaceId: 'b' } },
+      { method: 'session.create', payload: { workspaceId: 'b' } },
+    ])
+    store.dispose()
+  })
+
+  it.each(['path', 'creation'])('keeps the original Session when workspace %s fails', async failure => {
+    installMockHost({ existingSession: true, workspaces: workspaceListing(), ...(failure === 'path' ? { workspaceFailure: 'invalid directory' } : { createFailure: 'creation failed' }) })
+    const store = new ConversationStore(translate)
+    await store.start()
+    await expect(store.openWorkspace({ path: '/b' })).rejects.toThrow()
+    expect(store.snapshot().currentSessionId).toBe(session.sessionId)
+    expect(store.snapshot().creatingSession).toBe(false)
+    store.dispose()
+  })
+
+  it.each(['cancel', 'navigate'])('does not redirect after %s during directory creation and ignores duplicate clicks', async action => {
+    let release: (() => void) | undefined
+    const wait = new Promise<void>(resolve => { release = resolve })
+    const host = installMockHost({ existingSession: true, workspaces: workspaceListing(), createWait: wait })
+    const store = new ConversationStore(translate)
+    await store.start()
+    const controller = new AbortController()
+    const pending = store.openWorkspace({ workspaceId: 'b' }, controller.signal)
+    await vi.waitFor(() => expect(host.methods).toContain('session.create'))
+    await store.openWorkspace({ workspaceId: 'b' })
+    if (action === 'cancel') controller.abort()
+    else await store.selectSession(session.sessionId)
+    release?.()
+    await pending.catch(() => { /* Transport cancellation is also allowed. */ })
+    expect(host.methods.filter(method => method === 'session.create')).toHaveLength(1)
+    expect(store.snapshot().currentSessionId).toBe(session.sessionId)
+    expect(store.snapshot().creatingSession).toBe(false)
+    store.dispose()
+  })
+
+  it.each(['CUSTOM_DEEPSEEK_KEY', undefined])('uses the saved credential reference for reading and mutations: %s', async reference => {
+    const host = installMockHost({ credentialRef: reference, pendingRestart: true })
+    const store = new ConversationStore(translate)
+    await store.refreshCredential()
+    const expected = reference ?? 'DEEPSEEK_API_KEY'
+    expect(store.snapshot().credentialRef).toBe(expected)
+    expect(store.snapshot().credentialPendingRestart).toBe(true)
+    expect(host.calls).toContainEqual({ method: 'credentials.describe', payload: { refs: [expected] } })
+    await store.saveCredential('fixture-key')
+    await store.unsetCredential()
+    expect(host.calls).toContainEqual({ method: 'credentials.set', payload: { ref: expected, value: 'fixture-key' } })
+    expect(host.calls).toContainEqual({ method: 'credentials.unset', payload: { ref: expected } })
+    store.dispose()
+  })
+
+  it.each([{ settingsFailure: 'unavailable' }, { missingProvider: true }])('does not write a fallback credential when Settings cannot identify it: %j', async options => {
+    const host = installMockHost(options)
+    const store = new ConversationStore(translate)
+    await expect(store.refreshCredential()).rejects.toThrow()
+    await expect(store.saveCredential('fixture-key')).rejects.toThrow()
+    await expect(store.unsetCredential()).rejects.toThrow()
+    expect(store.snapshot().credentialLoaded).toBe(false)
+    expect(host.calls.every(call => !call.method.startsWith('credentials.'))).toBe(true)
+    store.dispose()
+  })
+
+  it('ignores stale credential metadata after a newer Settings refresh', async () => {
+    let release: (() => void) | undefined
+    const pending = new Promise<void>(resolve => { release = resolve })
+    let reads = 0
+    vi.stubGlobal('fetch', vi.fn(async (_input: unknown, init?: RequestInit) => {
+      const envelope = JSON.parse(String(init?.body))
+      let value: unknown
+      if (envelope.method === 'settings.describe') {
+        const reference = ++reads === 1 ? 'OLD_KEY' : 'NEW_KEY'
+        value = { writable: true, namespaces: [{ ns: 'llmprovider', name: 'deepseek', value: { apiKeyEnv: reference }, revision: reads, applies: 'restart' }] }
+      } else {
+        const reference = envelope.payload.refs[0]
+        if (reference === 'OLD_KEY') await pending
+        value = { credentials: { [reference]: { configured: true, writable: true } } }
+      }
+      return response({ rpcId: envelope.rpcId, result: { ok: true, value } })
+    }))
+    const store = new ConversationStore(translate)
+    const earlier = store.refreshCredential()
+    await vi.waitFor(() => expect(reads).toBe(1))
+    await store.refreshCredential()
+    release?.()
+    await earlier
+    expect(store.snapshot().credentialRef).toBe('NEW_KEY')
+    store.dispose()
   })
 
   it('refuses images on a text model without automatically selecting another model', async () => {
@@ -73,46 +246,15 @@ describe('ConversationStore', () => {
       'ws://localhost:3000/api/events.host',
       'ws://localhost:3000/api/events.mux',
     ])
-    expect(host.methods).toEqual([
+    expect(host.methods.filter(method => method !== 'credentials.describe')).toEqual([
       'host.describe',
-      'credentials.describe',
-      'bound.list',
+      'settings.describe',
       'session.list',
       'session.create',
       'session.history',
       'session.list',
     ])
 
-    store.dispose()
-  })
-
-  it('loads existing history when the bound catalog is unavailable', async () => {
-    const host = installMockHost({ existingSession: true, boundDefinitionsFailure: 'Unknown method: bound.list' })
-    const store = new ConversationStore(translate)
-
-    await store.start()
-
-    expect(store.snapshot().phase).toBe('ready')
-    expect(store.snapshot().currentSessionId).toBe(session.sessionId)
-    expect(host.methods).toContain('session.history')
-    expect(host.methods).not.toContain('session.create')
-    expect(store.snapshot().boundDefinitionsLoaded).toBe(false)
-    expect(store.snapshot().error).toBe('Unknown method: bound.list')
-    store.dispose()
-  })
-
-  it('does not wait for the bound catalog before selecting an existing Session', async () => {
-    let release: (() => void) | undefined
-    const pending = new Promise<void>(resolve => { release = resolve })
-    installMockHost({ existingSession: true, boundDefinitionsWait: pending })
-    const store = new ConversationStore(translate)
-
-    await store.start()
-
-    expect(store.snapshot().phase).toBe('ready')
-    expect(store.snapshot().currentSessionId).toBe(session.sessionId)
-    expect(store.snapshot().boundDefinitionsLoaded).toBe(false)
-    release?.()
     store.dispose()
   })
 
@@ -131,7 +273,7 @@ describe('ConversationStore', () => {
     expect(store.snapshot().creatingSession).toBe(true)
     expect(store.snapshot().currentSessionId).toBeUndefined()
     expect(store.snapshot().composerState).toBe('composer.creatingSession')
-    expect(host.methods.filter(method => method === 'session.create')).toHaveLength(1)
+    await vi.waitFor(() => expect(host.methods.filter(method => method === 'session.create')).toHaveLength(1))
 
     releaseCreate?.()
     await Promise.all([firstCreate, duplicateCreate])
@@ -471,93 +613,17 @@ describe('ConversationStore', () => {
     store.dispose()
   })
 
-  it('creates and replaces complete Bound Definitions', async () => {
-    const host = installMockHost({ existingSession: true })
-    const store = new ConversationStore(translate)
-    await store.start()
-    await store.refreshBoundTools()
-    const draft: BoundDefinitionDraft = {
-      name: 'researcher',
-      enabled: true,
-      systemPrompt: 'Research in the background.',
-      toolRestriction: { allow: [] },
-      extensions: ['report'],
-    }
 
-    const created = await store.createBoundDefinition(draft)
-    expect(created.revision).toBe(1)
-    expect(store.snapshot().boundDefinitions).toEqual([created])
-
-    const replaced = await store.replaceBoundDefinition(1, {
-      ...draft,
-      enabled: false,
-      systemPrompt: 'Revised prompt.',
-    })
-    expect(replaced).toEqual({
-      ...draft,
-      enabled: false,
-      systemPrompt: 'Revised prompt.',
-      revision: 2,
-    })
-    expect(store.snapshot().boundDefinitions).toEqual([replaced])
-    expect(host.calls.filter(call => call.method.startsWith('bound.')).map(call => call.method)).toEqual([
-      'bound.list',
-      'bound.tools',
-      'bound.create',
-      'bound.list',
-      'bound.replace',
-      'bound.list',
-    ])
-    store.dispose()
-  })
-
-  it('keeps Bound catalog failures local and permits retry', async () => {
-    const options: MockHostOptions = {
-      existingSession: true,
-      boundToolsFailure: 'directory unavailable',
-      boundExtensionsFailure: 'extension directory unavailable',
-    }
-    const host = installMockHost(options)
-    const store = new ConversationStore(translate)
-    await store.start()
-
-    expect(store.snapshot().phase).toBe('ready')
-    expect(host.methods).not.toContain('bound.tools')
-
-    await store.refreshBoundTools()
-    expect(store.snapshot().boundToolsState).toBe('failed')
-    expect(store.snapshot().boundToolsError).toBe('directory unavailable')
-    expect(store.snapshot().error).toBeUndefined()
-
-    await store.refreshBoundExtensions()
-    expect(store.snapshot().boundExtensionsState).toBe('failed')
-    expect(store.snapshot().boundExtensionsError).toBe('extension directory unavailable')
-    expect(store.snapshot().error).toBeUndefined()
-
-    options.boundToolsFailure = undefined
-    options.boundExtensionsFailure = undefined
-    await store.refreshBoundTools()
-    await store.refreshBoundExtensions()
-    expect(store.snapshot().boundToolsState).toBe('ready')
-    expect(store.snapshot().boundTools).toEqual([
-      {
-        name: 'delegate',
-        description: 'Start a child agent.',
-      },
-    ])
-    expect(store.snapshot().boundExtensionsState).toBe('ready')
-    expect(store.snapshot().boundExtensions).toEqual([
-      {
-        name: 'memory',
-      },
-    ])
-    expect(host.methods.filter(method => method === 'bound.tools')).toHaveLength(2)
-    expect(host.methods.filter(method => method === 'bound.extensions')).toHaveLength(2)
-    store.dispose()
-  })
 })
 
 interface MockHostOptions {
+  pickedPath?: string | null
+  workspaces?: WorkspaceListValue
+  workspaceFailure?: string
+  credentialRef?: string
+  settingsFailure?: string
+  missingProvider?: boolean
+  pendingRestart?: boolean
   existingSession?: boolean
   createFailure?: string
   createWait?: Promise<void>
@@ -567,13 +633,6 @@ interface MockHostOptions {
   historyWait?: Promise<void>
   listWait?: Promise<void>
   sessionPages?: Record<string, { items: SessionSummary[], nextCursor?: string }>
-  boundDefinitionsFailure?: string
-  boundDefinitionsWait?: Promise<void>
-  boundDefinitions?: BoundDefinition[]
-  boundTools?: BoundToolOption[]
-  boundToolsFailure?: string
-  boundExtensions?: BoundExtensionOption[]
-  boundExtensionsFailure?: string
 }
 
 function installMockHost(options: MockHostOptions = {}): {
@@ -582,7 +641,6 @@ function installMockHost(options: MockHostOptions = {}): {
   calls: Array<{ method: string, payload: unknown }>
 } {
   let sessions = options.existingSession === true ? [session] : []
-  let boundDefinitions = [...(options.boundDefinitions ?? [])]
   const methods: string[] = []
   const responses: unknown[] = []
   const calls: Array<{ method: string, payload: unknown }> = []
@@ -603,6 +661,16 @@ function installMockHost(options: MockHostOptions = {}): {
     calls.push({ method: call.method, payload: call.payload })
     let value: unknown
     switch (call.method) {
+    case 'directoryPicker.pick':
+      value = options.pickedPath ?? null
+      break
+    case 'workspace.list':
+      value = options.workspaces ?? { items: [], archivedSessionIds: [] }
+      break
+    case 'workspace.create':
+      if (options.workspaceFailure !== undefined) return response({ rpcId: call.rpcId, result: { ok: false, error: { message: options.workspaceFailure } } })
+      value = { workspace: options.workspaces?.items[0], created: true }
+      break
     case 'host.describe':
       value = {
         version: 'test',
@@ -612,10 +680,21 @@ function installMockHost(options: MockHostOptions = {}): {
         canOpenPath: false,
       }
       break
+    case 'settings.describe':
+      if (options.settingsFailure !== undefined) return response({ rpcId: call.rpcId, result: { ok: false, error: { message: options.settingsFailure } } })
+      value = { writable: true, namespaces: options.missingProvider ? [] : [{
+        ns: 'llmprovider', name: 'deepseek', value: options.credentialRef ? { apiKeyEnv: options.credentialRef } : {},
+        revision: 0, applies: 'restart', pendingRestart: options.pendingRestart,
+      }] }
+      break
+    case 'credentials.set':
+    case 'credentials.unset':
+      value = {}
+      break
     case 'credentials.describe':
       value = {
         credentials: {
-          DEEPSEEK_API_KEY: {
+          [options.credentialRef ?? 'DEEPSEEK_API_KEY']: {
             configured: true,
             source: 'environment',
             writable: false,
@@ -623,81 +702,6 @@ function installMockHost(options: MockHostOptions = {}): {
         },
       }
       break
-    case 'bound.list':
-      await options.boundDefinitionsWait
-      if (options.boundDefinitionsFailure !== undefined) {
-        return response({
-          rpcId: call.rpcId,
-          result: { ok: false, error: { message: options.boundDefinitionsFailure } },
-        })
-      }
-      value = { definitions: boundDefinitions }
-      break
-    case 'bound.tools':
-      if (options.boundToolsFailure !== undefined) {
-        return response({
-          rpcId: call.rpcId,
-          result: {
-            ok: false,
-            error: {
-              message: options.boundToolsFailure,
-            },
-          },
-        })
-      }
-      value = {
-        tools: options.boundTools ?? [
-          {
-            name: 'delegate',
-            description: 'Start a child agent.',
-          },
-        ],
-      }
-      break
-    case 'bound.extensions':
-      if (options.boundExtensionsFailure !== undefined) {
-        return response({
-          rpcId: call.rpcId,
-          result: {
-            ok: false,
-            error: {
-              message: options.boundExtensionsFailure,
-            },
-          },
-        })
-      }
-      value = {
-        extensions: options.boundExtensions ?? [
-          {
-            name: 'memory',
-          },
-        ],
-      }
-      break
-    case 'bound.create': {
-      const payload = call.payload as { definition: BoundDefinitionDraft }
-      const committed: BoundDefinition = {
-        ...payload.definition,
-        revision: 1,
-      }
-      boundDefinitions = [...boundDefinitions, committed]
-      value = { definition: committed }
-      break
-    }
-    case 'bound.replace': {
-      const payload = call.payload as {
-        expectedRevision: number
-        definition: BoundDefinitionDraft
-      }
-      const committed: BoundDefinition = {
-        ...payload.definition,
-        revision: payload.expectedRevision + 1,
-      }
-      boundDefinitions = boundDefinitions.map(current =>
-        current.name === committed.name ? committed : current)
-      value = { definition: committed }
-      break
-    }
     case 'session.list':
       await options.listWait
       const listPayload = call.payload as { cursor?: string }
@@ -778,4 +782,8 @@ function response(value: unknown, status = 200): Response {
       'content-type': 'application/json',
     },
   })
+}
+
+function workspaceListing(): WorkspaceListValue {
+  return { items: [{ workspaceId: 'b', path: '/b', title: 'B', sessionIds: [] }], archivedSessionIds: [] }
 }

@@ -15,6 +15,7 @@ type Creation struct {
 // ReserveAgent registers one creation identity and its optional parent lifetime.
 // It neither starts Actors nor confirms readiness; CreateAgent owns startup.
 type ReserveAgent struct {
+	Role     agent.Role
 	Creation Creation
 	Parent   *Creation
 }
@@ -64,4 +65,11 @@ type Inspect struct{ Creation Creation }
 type Inspected struct {
 	Registration agent.Registration
 	Err          error
+}
+
+// RestartChild asks the child's existing manager to replace an obsolete lifetime.
+// It carries no editable configuration; startup reads the latest Settings snapshot.
+// Completion acknowledges admission. The manager exposes startup and cleanup failures.
+type RestartChild struct {
+	Creation Creation
 }

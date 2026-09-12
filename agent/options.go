@@ -4,9 +4,9 @@ import "errors"
 
 // Options contains the provider-neutral configuration applied to one Agent.
 type Options struct {
-	Provider  string
-	Model     string
-	MaxTokens *int
+	Provider  string `json:"provider,omitempty"`
+	Model     string `json:"model,omitempty"`
+	MaxTokens *int   `json:"maxTokens,omitempty"`
 }
 
 // Clone copies mutable fields without changing unset option semantics.

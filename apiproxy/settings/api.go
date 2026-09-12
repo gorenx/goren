@@ -3,11 +3,28 @@ package settingsapi
 import (
 	"context"
 	"encoding/json"
+
 	rpc "github.com/gorenx/goren/apiproxy/rpc"
+	"github.com/gorenx/goren/settings"
+	"github.com/gorenx/goren/subagent/companion"
+	"github.com/gorenx/goren/tools"
 )
 
-// DescribeMethod is the loopback-only Settings catalog endpoint.
-const DescribeMethod = "settings.describe"
+// Settings methods share the Host privileged access boundary.
+const (
+	UpdateAgentMethod     = "settings.updateAgent"
+	UpdateCompanionMethod = "settings.updateCompanion"
+	ResetCompanionMethod  = "settings.resetCompanion"
+	DescribeMethod        = "settings.describe"
+	UpdateToolMethod      = "settings.updateTool"
+	ResetToolMethod       = "settings.resetTool"
+	UpdateProviderMethod  = "settings.updateProvider"
+	UpdatePromptMethod    = "settings.updatePrompt"
+	UpdateMCPMethod       = "settings.updateMCP"
+	ResetProviderMethod   = "settings.resetProvider"
+	ResetPromptMethod     = "settings.resetPrompt"
+	ResetMCPMethod        = "settings.resetMCP"
+)
 
 // DescribeRequest is the empty settings.describe payload.
 type DescribeRequest struct{}
@@ -16,8 +33,9 @@ type DescribeRequest struct{}
 type ApplyMode string
 
 const (
-	ApplyLive    ApplyMode = "live"
-	ApplyRestart ApplyMode = "restart"
+	ApplyAgentRestart ApplyMode = "agent_restart"
+	ApplyNewInstance  ApplyMode = "new_instance"
+	ApplyRestart      ApplyMode = "restart"
 )
 
 // SecretView reports a redacted secret slot without its value.
@@ -28,14 +46,16 @@ type SecretView struct {
 
 // NamespaceView is one redacted Settings namespace snapshot.
 type NamespaceView struct {
-	NS       string           `json:"ns"`
-	Schema   json.RawMessage  `json:"schema"`
-	Value    json.RawMessage  `json:"value"`
-	Base     *json.RawMessage `json:"base,omitempty"`
-	User     *json.RawMessage `json:"user,omitempty"`
-	Applies  ApplyMode        `json:"applies"`
-	Secrets  []SecretView     `json:"secrets"`
-	Revision int64            `json:"revision"`
+	PendingRestart bool             `json:"pendingRestart,omitempty"`
+	NS             string           `json:"ns"`
+	Name           string           `json:"name"`
+	Schema         json.RawMessage  `json:"schema"`
+	Value          json.RawMessage  `json:"value"`
+	Base           *json.RawMessage `json:"base,omitempty"`
+	User           *json.RawMessage `json:"user,omitempty"`
+	Applies        ApplyMode        `json:"applies"`
+	Secrets        []SecretView     `json:"secrets"`
+	Revision       int64            `json:"revision"`
 }
 
 // DescribeValue is the complete browser-visible Settings catalog.
@@ -45,13 +65,132 @@ type DescribeValue struct {
 	Namespaces  []NamespaceView `json:"namespaces"`
 }
 
-// API owns the currently included Settings read method.
-type API interface {
-	Describe(context.Context, rpc.Request[DescribeRequest]) (rpc.Outcome[DescribeValue], error)
+// UpdateProviderRequest replaces one complete named configuration.
+type UpdateProviderRequest struct {
+	Name             string                  `json:"name"`
+	ExpectedRevision int64                   `json:"expectedRevision"`
+	Config           settings.ProviderConfig `json:"config"`
 }
 
-// Register installs settings.describe without claiming the
-// separately scoped document and mutation methods.
+// ResetProviderRequest clears the complete named override.
+type ResetProviderRequest struct {
+	Name             string `json:"name"`
+	ExpectedRevision int64  `json:"expectedRevision"`
+}
+
+// UpdatePromptRequest replaces one complete named configuration.
+type UpdatePromptRequest struct {
+	Name             string                `json:"name"`
+	ExpectedRevision int64                 `json:"expectedRevision"`
+	Config           settings.PromptConfig `json:"config"`
+}
+
+// ResetPromptRequest clears the complete named override.
+type ResetPromptRequest struct {
+	Name             string `json:"name"`
+	ExpectedRevision int64  `json:"expectedRevision"`
+}
+
+// UpdateMCPRequest replaces one complete named configuration.
+type UpdateMCPRequest struct {
+	Name             string             `json:"name"`
+	ExpectedRevision int64              `json:"expectedRevision"`
+	Config           settings.MCPConfig `json:"config"`
+}
+
+// ResetMCPRequest clears the complete named override.
+type ResetMCPRequest struct {
+	Name             string `json:"name"`
+	ExpectedRevision int64  `json:"expectedRevision"`
+}
+
+// UpdateToolRequest replaces the complete editable configuration of one tool.
+type UpdateToolRequest struct {
+	Name             string       `json:"name"`
+	ExpectedRevision int64        `json:"expectedRevision"`
+	Config           tools.Config `json:"config"`
+}
+
+// ResetToolRequest clears one complete named tool override.
+type ResetToolRequest struct {
+	Name             string `json:"name"`
+	ExpectedRevision int64  `json:"expectedRevision"`
+}
+
+// API exposes the catalog and distinct Settings business operations.
+type API interface {
+	UpdateAgent(context.Context, rpc.Request[UpdateAgentRequest]) (rpc.Outcome[NamespaceView], error)
+	UpdateCompanion(context.Context, rpc.Request[UpdateCompanionRequest]) (rpc.Outcome[NamespaceView], error)
+	ResetCompanion(context.Context, rpc.Request[ResetCompanionRequest]) (rpc.Outcome[NamespaceView], error)
+	UpdateTool(context.Context, rpc.Request[UpdateToolRequest]) (rpc.Outcome[NamespaceView], error)
+	ResetTool(context.Context, rpc.Request[ResetToolRequest]) (rpc.Outcome[NamespaceView], error)
+	Describe(context.Context, rpc.Request[DescribeRequest]) (rpc.Outcome[DescribeValue], error)
+	UpdateProvider(context.Context, rpc.Request[UpdateProviderRequest]) (rpc.Outcome[NamespaceView], error)
+	UpdatePrompt(context.Context, rpc.Request[UpdatePromptRequest]) (rpc.Outcome[NamespaceView], error)
+	UpdateMCP(context.Context, rpc.Request[UpdateMCPRequest]) (rpc.Outcome[NamespaceView], error)
+	ResetProvider(context.Context, rpc.Request[ResetProviderRequest]) (rpc.Outcome[NamespaceView], error)
+	ResetPrompt(context.Context, rpc.Request[ResetPromptRequest]) (rpc.Outcome[NamespaceView], error)
+	ResetMCP(context.Context, rpc.Request[ResetMCPRequest]) (rpc.Outcome[NamespaceView], error)
+}
+
+// Register installs the catalog, typed updates and resets.
 func Register(methods *rpc.Catalog, endpoint API) error {
-	return rpc.RegisterUnary(methods, DescribeMethod, rpc.DecodeObject[DescribeRequest], endpoint.Describe)
+	if err := rpc.RegisterUnary(methods, UpdateAgentMethod, DecodeUpdateAgentRequest, endpoint.UpdateAgent); err != nil {
+		return err
+	}
+	if err := rpc.RegisterUnary(methods, UpdateCompanionMethod, DecodeUpdateCompanionRequest, endpoint.UpdateCompanion); err != nil {
+		return err
+	}
+	if err := rpc.RegisterUnary(methods, ResetCompanionMethod, DecodeResetCompanionRequest, endpoint.ResetCompanion); err != nil {
+		return err
+	}
+	if err := rpc.RegisterUnary(methods, DescribeMethod, rpc.DecodeObject[DescribeRequest], endpoint.Describe); err != nil {
+		return err
+	}
+	if err := rpc.RegisterUnary(methods, UpdateProviderMethod, DecodeUpdateProviderRequest, endpoint.UpdateProvider); err != nil {
+		return err
+	}
+	if err := rpc.RegisterUnary(methods, UpdatePromptMethod, DecodeUpdatePromptRequest, endpoint.UpdatePrompt); err != nil {
+		return err
+	}
+	if err := rpc.RegisterUnary(methods, UpdateMCPMethod, DecodeUpdateMCPRequest, endpoint.UpdateMCP); err != nil {
+		return err
+	}
+	if err := rpc.RegisterUnary(methods, ResetProviderMethod, DecodeResetProviderRequest, endpoint.ResetProvider); err != nil {
+		return err
+	}
+	if err := rpc.RegisterUnary(methods, ResetPromptMethod, DecodeResetPromptRequest, endpoint.ResetPrompt); err != nil {
+		return err
+	}
+	if err := rpc.RegisterUnary(methods, ResetMCPMethod, DecodeResetMCPRequest, endpoint.ResetMCP); err != nil {
+		return err
+	}
+	if err := rpc.RegisterUnary(methods, UpdateToolMethod, DecodeUpdateToolRequest, endpoint.UpdateTool); err != nil {
+		return err
+	}
+	if err := rpc.RegisterUnary(methods, ResetToolMethod, DecodeResetToolRequest, endpoint.ResetTool); err != nil {
+		return err
+	}
+	return nil
+}
+
+// UpdateCompanionRequest replaces one complete named configuration.
+type UpdateCompanionRequest struct {
+	Name             string           `json:"name"`
+	ExpectedRevision int64            `json:"expectedRevision"`
+	Config           companion.Config `json:"config"`
+}
+
+// ResetCompanionRequest clears the complete named override.
+type ResetCompanionRequest struct {
+	Name             string `json:"name"`
+	ExpectedRevision int64  `json:"expectedRevision"`
+}
+
+// UpdateAgentRequest replaces an independent named configuration. It neither
+// selects a Session nor authorizes applying that configuration to a running Agent.
+type UpdateAgentRequest struct {
+	Name             string          `json:"name"`
+	ExpectedRevision int64           `json:"expectedRevision"`
+	Config           settings.Values `json:"config"`
 }

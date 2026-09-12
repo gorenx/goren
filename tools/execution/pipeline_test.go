@@ -48,12 +48,13 @@ func TestPipelinePanicsReturnFailures(t *testing.T) {
 		},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
-			business := testScheduler(t, scenario.options, objectTool("echo", "echo", executorStub(passThroughBody)))
+			business := testScheduler(t, objectTool("echo", "echo", executorStub(passThroughBody)))
 			outcome := executeCall(t, business, context.Background(), tools.ToolExecutionInput{
 				CallID:    "panic-check",
 				Name:      "echo",
 				Arguments: []byte(`{}`),
-			})
+			}, scenario.options,
+			)
 			if !outcome.Failed() {
 				t.Fatal("panic did not produce a failed tool result")
 			}
@@ -88,12 +89,13 @@ func TestPreparedCallRetainsCapturedPolicy(t *testing.T) {
 		Results:   original,
 	}
 	definition := objectTool("echo", "echo", executorStub(passThroughBody))
-	coordinator := testScheduler(t, policies, definition)
+	coordinator := testScheduler(t, definition)
 	prepared, err := coordinator.PrepareCall(ctx, tools.ToolExecutionInput{
 		CallID:    "old",
 		Name:      "echo",
 		Arguments: []byte("{}"),
-	})
+	}, policies,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +105,7 @@ func TestPreparedCallRetainsCapturedPolicy(t *testing.T) {
 	}
 	policies.Execution = replacement
 	policies.Results = replacement
-	next := testScheduler(t, policies, definition)
+	next := coordinator
 	err = prepared.Dispatch()
 	if err != nil {
 		t.Fatal(err)
@@ -116,7 +118,8 @@ func TestPreparedCallRetainsCapturedPolicy(t *testing.T) {
 		CallID:    "new",
 		Name:      "echo",
 		Arguments: []byte("{}"),
-	})
+	}, policies,
+	)
 	if outcome.Failed() {
 		t.Fatal(outcome)
 	}

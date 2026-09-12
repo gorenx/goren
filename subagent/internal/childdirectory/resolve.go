@@ -213,13 +213,6 @@ func childEntry(
 			Activity:    activity,
 			HasChildren: children,
 		}
-	case subagent.ModeBound:
-		return subagent.BoundChildEntry{
-			ID:          identifier,
-			Label:       *identity.Label,
-			Activity:    activity,
-			HasChildren: children,
-		}
 	default:
 		return diagnostic(identifier, subagent.DiagnosticCorrupt)
 	}

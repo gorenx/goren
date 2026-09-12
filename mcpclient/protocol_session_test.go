@@ -11,7 +11,7 @@ import (
 	"time"
 
 	sdkclient "github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/client/transport"
+	sdktransport "github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -25,10 +25,10 @@ type requestObservation struct {
 
 type fixtureTransport struct {
 	mutex               sync.Mutex
-	responder           func(context.Context, transport.JSONRPCRequest) (*transport.JSONRPCResponse, error)
+	responder           func(context.Context, sdktransport.JSONRPCRequest) (*sdktransport.JSONRPCResponse, error)
 	observations        []requestObservation
 	notificationHandler func(mcp.JSONRPCNotification)
-	requestHandler      transport.RequestHandler
+	requestHandler      sdktransport.RequestHandler
 	protocolVersion     string
 	started             bool
 	closed              bool
@@ -43,8 +43,8 @@ func (fixture *fixtureTransport) Start(context.Context) error {
 
 func (fixture *fixtureTransport) SendRequest(
 	requestContext context.Context,
-	request transport.JSONRPCRequest,
-) (*transport.JSONRPCResponse, error) {
+	request sdktransport.JSONRPCRequest,
+) (*sdktransport.JSONRPCResponse, error) {
 	params, err := json.Marshal(request.Params)
 	if err != nil {
 		return nil, err
@@ -84,7 +84,7 @@ func (fixture *fixtureTransport) SetNotificationHandler(
 	fixture.notificationHandler = handler
 }
 
-func (fixture *fixtureTransport) SetRequestHandler(handler transport.RequestHandler) {
+func (fixture *fixtureTransport) SetRequestHandler(handler sdktransport.RequestHandler) {
 	fixture.mutex.Lock()
 	defer fixture.mutex.Unlock()
 	fixture.requestHandler = handler
@@ -143,8 +143,8 @@ func protocolTestSettings(elicitation sdkclient.ElicitationHandler) protocolSett
 	}
 }
 
-func discoverResponse(requestID mcp.RequestId) *transport.JSONRPCResponse {
-	return transport.NewJSONRPCResultResponse(
+func discoverResponse(requestID mcp.RequestId) *sdktransport.JSONRPCResponse {
+	return sdktransport.NewJSONRPCResultResponse(
 		requestID,
 		json.RawMessage(`{
 			"resultType":"complete",
@@ -181,8 +181,8 @@ func TestProtocolSessionStartDiscoversExactVersionAndCapabilities(t *testing.T) 
 	fixture := &fixtureTransport{}
 	fixture.responder = func(
 		_ context.Context,
-		request transport.JSONRPCRequest,
-	) (*transport.JSONRPCResponse, error) {
+		request sdktransport.JSONRPCRequest,
+	) (*sdktransport.JSONRPCResponse, error) {
 		if request.Method != string(mcp.MethodServerDiscover) {
 			t.Fatalf("request method = %q, want %q", request.Method, mcp.MethodServerDiscover)
 		}
@@ -247,18 +247,18 @@ func TestProtocolSessionStartRejectsLegacyFallback(t *testing.T) {
 	fixture := &fixtureTransport{}
 	fixture.responder = func(
 		_ context.Context,
-		request transport.JSONRPCRequest,
-	) (*transport.JSONRPCResponse, error) {
+		request sdktransport.JSONRPCRequest,
+	) (*sdktransport.JSONRPCResponse, error) {
 		switch request.Method {
 		case string(mcp.MethodServerDiscover):
-			return transport.NewJSONRPCErrorResponse(
+			return sdktransport.NewJSONRPCErrorResponse(
 				request.ID,
 				mcp.METHOD_NOT_FOUND,
 				"method not found",
 				nil,
 			), nil
 		case string(mcp.MethodInitialize):
-			return transport.NewJSONRPCResultResponse(
+			return sdktransport.NewJSONRPCResultResponse(
 				request.ID,
 				json.RawMessage(`{
 					"protocolVersion":"2025-11-25",
@@ -299,8 +299,8 @@ func TestProtocolSessionCallToolCompletesElicitationRoundTrip(t *testing.T) {
 	fixture := &fixtureTransport{}
 	fixture.responder = func(
 		_ context.Context,
-		request transport.JSONRPCRequest,
-	) (*transport.JSONRPCResponse, error) {
+		request sdktransport.JSONRPCRequest,
+	) (*sdktransport.JSONRPCResponse, error) {
 		if request.Method == string(mcp.MethodServerDiscover) {
 			return discoverResponse(request.ID), nil
 		}
@@ -332,9 +332,9 @@ func TestProtocolSessionCallToolCompletesElicitationRoundTrip(t *testing.T) {
 			if err != nil {
 				t.Fatalf("marshal input-required result: %v", err)
 			}
-			return transport.NewJSONRPCResultResponse(request.ID, rawResult), nil
+			return sdktransport.NewJSONRPCResultResponse(request.ID, rawResult), nil
 		}
-		return transport.NewJSONRPCResultResponse(
+		return sdktransport.NewJSONRPCResultResponse(
 			request.ID,
 			json.RawMessage(`{
 				"resultType":"complete",
@@ -435,12 +435,12 @@ func TestProtocolSessionCallToolPreservesUnknownCompleteContent(t *testing.T) {
 	fixture := &fixtureTransport{}
 	fixture.responder = func(
 		_ context.Context,
-		request transport.JSONRPCRequest,
-	) (*transport.JSONRPCResponse, error) {
+		request sdktransport.JSONRPCRequest,
+	) (*sdktransport.JSONRPCResponse, error) {
 		if request.Method == string(mcp.MethodServerDiscover) {
 			return discoverResponse(request.ID), nil
 		}
-		return transport.NewJSONRPCResultResponse(request.ID, unknownResult), nil
+		return sdktransport.NewJSONRPCResultResponse(request.ID, unknownResult), nil
 	}
 	session := startProtocolTestSession(t, fixture, nil)
 	rawResult, err := session.callTool(
@@ -460,12 +460,12 @@ func TestProtocolSessionCallToolDoesNotRecoverInputRequiredOnHandlerError(t *tes
 	fixture := &fixtureTransport{}
 	fixture.responder = func(
 		_ context.Context,
-		request transport.JSONRPCRequest,
-	) (*transport.JSONRPCResponse, error) {
+		request sdktransport.JSONRPCRequest,
+	) (*sdktransport.JSONRPCResponse, error) {
 		if request.Method == string(mcp.MethodServerDiscover) {
 			return discoverResponse(request.ID), nil
 		}
-		return transport.NewJSONRPCResultResponse(
+		return sdktransport.NewJSONRPCResultResponse(
 			request.ID,
 			json.RawMessage(`{
 				"resultType":"input_required",
@@ -507,8 +507,8 @@ func TestProtocolSessionCallToolReturnsTransportErrorWithoutCapture(t *testing.T
 	fixture := &fixtureTransport{}
 	fixture.responder = func(
 		_ context.Context,
-		request transport.JSONRPCRequest,
-	) (*transport.JSONRPCResponse, error) {
+		request sdktransport.JSONRPCRequest,
+	) (*sdktransport.JSONRPCResponse, error) {
 		if request.Method == string(mcp.MethodServerDiscover) {
 			return discoverResponse(request.ID), nil
 		}
@@ -530,8 +530,8 @@ func TestProtocolTransportAppliesPerRequestTimeoutButNotListenTimeout(t *testing
 	fixture := &fixtureTransport{}
 	fixture.responder = func(
 		requestContext context.Context,
-		_ transport.JSONRPCRequest,
-	) (*transport.JSONRPCResponse, error) {
+		_ sdktransport.JSONRPCRequest,
+	) (*sdktransport.JSONRPCResponse, error) {
 		_, hasDeadline := requestContext.Deadline()
 		entered <- hasDeadline
 		<-requestContext.Done()
@@ -543,7 +543,7 @@ func TestProtocolTransportAppliesPerRequestTimeoutButNotListenTimeout(t *testing
 	}
 	_, err = wrapped.SendRequest(
 		t.Context(),
-		transport.JSONRPCRequest{
+		sdktransport.JSONRPCRequest{
 			JSONRPC: mcp.JSONRPC_VERSION,
 			ID:      mcp.NewRequestId(1),
 			Method:  string(mcp.MethodToolsList),
@@ -561,7 +561,7 @@ func TestProtocolTransportAppliesPerRequestTimeoutButNotListenTimeout(t *testing
 	go func() {
 		_, listenErr := wrapped.SendRequest(
 			listenContext,
-			transport.JSONRPCRequest{
+			sdktransport.JSONRPCRequest{
 				JSONRPC: mcp.JSONRPC_VERSION,
 				ID:      mcp.NewRequestId(2),
 				Method:  string(mcp.MethodSubscriptionsListen),
@@ -582,12 +582,12 @@ func TestProtocolSessionCallToolEnforcesResultLimit(t *testing.T) {
 	fixture := &fixtureTransport{}
 	fixture.responder = func(
 		_ context.Context,
-		request transport.JSONRPCRequest,
-	) (*transport.JSONRPCResponse, error) {
+		request sdktransport.JSONRPCRequest,
+	) (*sdktransport.JSONRPCResponse, error) {
 		if request.Method == string(mcp.MethodServerDiscover) {
 			return discoverResponse(request.ID), nil
 		}
-		return transport.NewJSONRPCResultResponse(
+		return sdktransport.NewJSONRPCResultResponse(
 			request.ID,
 			json.RawMessage(`{"resultType":"complete","content":[{"type":"text","text":"too large"}]}`),
 		), nil

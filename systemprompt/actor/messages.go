@@ -11,11 +11,19 @@ type Initialize struct {
 	Layer *systemprompt.PromptLayer
 }
 
+// ApplyBaseline replaces only configuration-owned shared prompt definitions.
+type ApplyBaseline struct {
+	Context context.Context
+	Config  systemprompt.Config
+}
+
 // Prepare captures registration membership without invoking user strategies.
 type Prepare struct{}
 
 // Prepared is the value used to evaluate one model request outside the mailbox.
 type Prepared struct {
+	// Config is captured together with Snapshot from the same root baseline.
+	Config   systemprompt.Config
 	Version  uint64
 	Snapshot systemprompt.Snapshot
 	Err      error

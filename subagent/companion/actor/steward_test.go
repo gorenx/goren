@@ -1,0 +1,783 @@
+package companionactor
+
+import (
+	"context"
+	"errors"
+	"path/filepath"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/gorenx/goren/agent"
+	agentactor "github.com/gorenx/goren/agent/actor"
+	middlewareactor "github.com/gorenx/goren/agent/middleware/actor"
+	agentregistry "github.com/gorenx/goren/agent/registry"
+	loopactor "github.com/gorenx/goren/agentloop/actor"
+	"github.com/gorenx/goren/agentmessage"
+	llmactor "github.com/gorenx/goren/llm/actor"
+	"github.com/gorenx/goren/mcpclient"
+	"github.com/gorenx/goren/session/persistence/sqlite"
+	sessionregistry "github.com/gorenx/goren/session/registry"
+	"github.com/gorenx/goren/settings"
+	settingsactor "github.com/gorenx/goren/settings/actor"
+	companions "github.com/gorenx/goren/subagent/companion"
+	"github.com/gorenx/goren/systemprompt"
+	promptactor "github.com/gorenx/goren/systemprompt/actor"
+	"github.com/gorenx/goren/tools"
+	toolregistry "github.com/gorenx/goren/tools/registry"
+	toolactor "github.com/gorenx/goren/tools/registry/actor"
+	runtimeactor "github.com/gorenx/goren/tools/runtime/actor"
+	"github.com/gorenx/goren/tools/tool"
+	implementationactor "github.com/gorenx/goren/tools/tool/actor"
+	goakt "github.com/tochemey/goakt/v4/actor"
+	"github.com/tochemey/goakt/v4/log"
+	"github.com/tochemey/goakt/v4/reentrancy"
+)
+
+// configurationFixture supplies config only; execution, Registry, Session and
+// SQLite remain real. Configuration independence is verified in a later stage.
+type configurationFixture struct{}
+
+func (*configurationFixture) OnActivate(context.Context, *goakt.GrainProps) error   { return nil }
+func (*configurationFixture) OnDeactivate(context.Context, *goakt.GrainProps) error { return nil }
+func (*configurationFixture) OnReceive(gc *goakt.GrainContext) {
+	switch gc.Message().(type) {
+	case llmactor.InitializeAgent:
+		gc.Response(llmactor.Completion{})
+	case agentactor.CancelMaintenance:
+		gc.Response(agentactor.MaintenanceCancelled{})
+	case promptactor.Prepare:
+		selected, err := systemprompt.ValidateConfig(systemprompt.Config{})
+		if err != nil {
+			panic(err)
+		}
+		layer, err := systemprompt.NewLayer(selected)
+		if err != nil {
+			panic(err)
+		}
+		gc.Response(promptactor.Prepared{
+			Version:  1,
+			Snapshot: layer.Capture(),
+		})
+	default:
+		gc.Unhandled()
+	}
+}
+
+type creationGate struct {
+	entered  chan struct{}
+	canceled chan struct{}
+	release  chan struct{}
+}
+
+type childFixture struct {
+	system   goakt.ActorSystem
+	registry *goakt.GrainIdentity
+	storage  *sqlite.Adapter
+	mu       sync.Mutex
+	gate     *creationGate
+	failure  error
+	catalog  *toolregistry.Catalog
+	settings settings.Settings
+}
+
+func (fixture *childFixture) Start(ctx context.Context, parent, child agentregistry.Creation, configurationName string, cwd *string) (agentregistry.Ready, error) {
+	fixture.mu.Lock()
+	gate := fixture.gate
+	failure := fixture.failure
+	selection := toolregistry.Catalog{}
+	if fixture.catalog != nil {
+		selection = fixture.catalog.Clone()
+	}
+	fixture.gate = nil
+	fixture.mu.Unlock()
+	if gate != nil {
+		close(gate.entered)
+		select {
+		case <-ctx.Done():
+			close(gate.canceled)
+			<-gate.release
+		case <-gate.release:
+		}
+	}
+	if failure != nil {
+		return agentregistry.Ready{}, failure
+	}
+	selected, err := fixture.settings.Describe(context.Background())
+	if err != nil {
+		return agentregistry.Ready{}, err
+	}
+	initial, found := selected.Target.Agents[configurationName]
+	if !found {
+		return agentregistry.Ready{}, errors.New("test: referenced configuration is absent")
+	}
+	// Model and MCP resource setup are outside this lifecycle fixture. Prompt
+	// configuration follows the actual Registry and Prompt Runtime path.
+	if len(initial.Tools) != 0 || len(initial.MCP) != 0 || initial.Model.Model != "" || initial.Model.Provider != "" || initial.Model.MaxTokens != nil {
+		return agentregistry.Ready{}, errors.New("test: configuration outside lifecycle fixture scope")
+	}
+	stored, err := fixture.storage.Load(context.Background(), child.AgentID)
+	if err != nil {
+		return agentregistry.Ready{}, err
+	}
+	prompt := initial.Prompts["default"].Prompt()
+	return ask[agentregistry.Ready](context.Background(), fixture.system, fixture.registry, agentregistry.CreateChildAgent{
+		Role:    agent.CompanionRole,
+		Parent:  parent,
+		Child:   child,
+		Restore: stored != nil,
+		Tools:   &selection,
+		Prompt:  &prompt,
+	})
+}
+
+func (*childFixture) Resolve(_ context.Context, _ agentregistry.Creation, policy companions.Config, values settings.Values) (settings.Values, error) {
+	if policy.Inherit.Model || policy.Inherit.Prompt || policy.Inherit.Tools == companions.InheritAllTools || policy.Inherit.MCP {
+		return settings.Values{}, errors.New("test: inherited configuration requires production Creator")
+	}
+	return values.Clone(), nil
+}
+
+func (*configurationFixture) ApplyPrompt(context.Context, string, systemprompt.Config) error {
+	return errors.New("test: unexpected global prompt update")
+}
+func (*configurationFixture) ValidateMCP(context.Context, []mcpclient.Config) error {
+	return errors.New("test: unexpected global MCP validation")
+}
+func (*configurationFixture) ApplyMCP(context.Context, []mcpclient.Config) error {
+	return errors.New("test: unexpected global MCP update")
+}
+func (*configurationFixture) ValidateTool(context.Context, string) error {
+	return errors.New("test: unexpected global tool validation")
+}
+func (*configurationFixture) ApplyTool(context.Context, string, tools.Config) error {
+	return errors.New("test: unexpected global tool update")
+}
+
+type stewardship struct {
+	system        goakt.ActorSystem
+	authority     *goakt.GrainIdentity
+	sessions      *goakt.GrainIdentity
+	configuration *goakt.GrainIdentity
+	input         agentregistry.CreateAgent
+	creator       *childFixture
+	client        *Client
+}
+
+func request[T any](t *testing.T, system goakt.ActorSystem, target *goakt.GrainIdentity, input any) T {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	result, err := ask[T](ctx, system, target, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
+func newStewardship(t *testing.T, prepare ...func(*stewardship) tool.Providers) *stewardship {
+	t.Helper()
+	storage, err := sqlite.Open(t.Context(), sqlite.Config{
+		Path:        filepath.Join(t.TempDir(), "sessions.sqlite"),
+		JournalMode: sqlite.JournalWAL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := storage.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	constructors := &implementationactor.Providers{}
+	system, err := goakt.NewActorSystem("steward", goakt.WithLogger(log.DiscardLogger), goakt.WithPubSub(), goakt.WithExtensions(constructors, &runtimeactor.Provider{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := system.Start(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := system.Stop(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	authority, err := goakt.GrainOf[*agentregistry.Grain](t.Context(), system, agentregistry.Name, goakt.WithLongLivedGrain(), goakt.WithGrainReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := goakt.GrainOf[*sessionregistry.RegistryGrain](t.Context(), system, sessionregistry.RegistryName, goakt.WithLongLivedGrain())
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration, err := goakt.GrainOf[*configurationFixture](t.Context(), system, "configuration", goakt.WithLongLivedGrain())
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools, err := goakt.GrainOf[*toolactor.RegistryGrain](t.Context(), system, toolactor.RegistryName, goakt.WithLongLivedGrain())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result := request[toolactor.Completion](t, system, tools, toolactor.RegisterSource{
+		Name: "local",
+	}); result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	pool, err := llmactor.SpawnPool(t.Context(), system, "models", 1, llmactor.InitializeWorker{
+		LLM: configuration,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hooks, err := goakt.GrainOf[*middlewareactor.Grain](t.Context(), system, "middleware", goakt.WithLongLivedGrain(), goakt.WithGrainReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture := &stewardship{
+		system:        system,
+		authority:     authority,
+		sessions:      sessions,
+		configuration: configuration,
+		input: agentregistry.CreateAgent{
+			Creation: agentregistry.Creation{
+				AgentID:    "parent",
+				CreationID: "first",
+			},
+			Storage:         storage,
+			SessionRegistry: sessions,
+			ModelConfig:     configuration,
+			ModelRouter:     pool,
+			Middleware:      hooks,
+			PromptRegistry:  configuration,
+			ToolsRegistry:   tools,
+			Timeout:         time.Second,
+		},
+		creator: &childFixture{
+			system:   system,
+			registry: authority,
+			storage:  storage,
+		},
+	}
+	entries := tool.Providers{}
+	for _, setup := range prepare {
+		for name, source := range setup(fixture) {
+			entries[name] = source
+		}
+	}
+	if err := constructors.Install(entries); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := settingsactor.Open(t.Context(), filepath.Join(t.TempDir(), "settings.sqlite"), settings.Directory{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := stored.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	fixture.creator.settings, err = stored.Bind(t.Context(), system, &configurationFixture{}, &configurationFixture{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.open(t)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := fixture.client.Close(ctx); err != nil {
+			t.Error(err)
+		}
+		result, err := ask[agentactor.Closed](ctx, system, authority, agentregistry.CloseAgent{
+			Creation: fixture.input.Creation,
+		})
+		if err != nil || result.Err != nil {
+			t.Errorf("parent cleanup: %v %v", err, result.Err)
+		}
+	})
+	return fixture
+}
+
+func (fixture *stewardship) open(t *testing.T) {
+	t.Helper()
+	ready := request[agentregistry.Ready](t, fixture.system, fixture.authority, fixture.input)
+	if ready.Err != nil {
+		t.Fatal(ready.Err)
+	}
+	route := request[sessionregistry.Endpoint](t, fixture.system, fixture.sessions, sessionregistry.ResolveSession{
+		SessionID:  fixture.input.Creation.AgentID,
+		CreationID: fixture.input.Creation.CreationID,
+	})
+	if route.Err != nil {
+		t.Fatal(route.Err)
+	}
+	endpoint, err := acceptSteward(t.Context(), fixture.system, start{
+		Parent:   fixture.input.Creation,
+		Registry: fixture.authority,
+		Session:  route.Target,
+		Creator:  fixture.creator,
+		Settings: fixture.creator.settings,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	awaitSteward(t, endpoint, Ready)
+	fixture.client = endpoint
+}
+
+func awaitPhase(t *testing.T, sender *Client, name string, expected Phase) View {
+	t.Helper()
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	var observed []View
+	for {
+		var err error
+		observed, err = sender.List(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range observed {
+			if entry.Companion.Name == name && entry.Phase == expected {
+				return entry
+			}
+		}
+		select {
+		case <-tick.C:
+		case <-deadline.C:
+			t.Fatalf("%s never reached %s: %+v", name, expected, observed)
+		}
+	}
+}
+
+func TestStewardCreatesDisablesRestartsAndRecoversRemoval(t *testing.T) {
+	fixture := newStewardship(t)
+	first, err := fixture.client.Create(t.Context(), Create{
+		Name:    "reviewer",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready := awaitPhase(t, fixture.client, "reviewer", Ready)
+	if first.Companion.ChildSessionID != ready.Creation.AgentID {
+		t.Fatal("child identity changed during startup")
+	}
+	stored, err := fixture.creator.storage.Load(t.Context(), "parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, err := companions.CompanionsFromEvents("parent", stored.Events)
+	if err != nil || len(records) != 1 || records[0].ChildSessionID != ready.Creation.AgentID {
+		t.Fatal("child started without durable intent")
+	}
+	if _, err := fixture.client.Create(t.Context(), Create{
+		Name: "reviewer",
+	}); !errors.Is(err, companions.ErrConflict) {
+		t.Fatalf("duplicate creation: %v", err)
+	}
+	disabled, err := fixture.client.Configure(t.Context(), Configure{
+		Name:             "reviewer",
+		ExpectedRevision: ready.Companion.Revision,
+		Enabled:          false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	awaitPhase(t, fixture.client, "reviewer", Stopped)
+	if _, err := fixture.client.Configure(t.Context(), Configure{
+		Name:             "reviewer",
+		ExpectedRevision: ready.Companion.Revision,
+		Enabled:          true,
+	}); !errors.Is(err, companions.ErrConflict) {
+		t.Fatalf("stale version accepted: %v", err)
+	}
+	if _, err := fixture.client.Configure(t.Context(), Configure{
+		Name:             "reviewer",
+		ExpectedRevision: disabled.Companion.Revision,
+		Enabled:          true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	resumed := awaitPhase(t, fixture.client, "reviewer", Ready)
+	if resumed.Creation.AgentID != ready.Creation.AgentID || resumed.Creation.CreationID == ready.Creation.CreationID {
+		t.Fatal("enable did not restore same Session with a new lifetime")
+	}
+	if _, err := fixture.client.Restart(t.Context(), Restart{
+		Name:               "reviewer",
+		ExpectedRevision:   resumed.Companion.Revision,
+		ExpectedCreationID: resumed.Creation.CreationID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	restarted := awaitPhase(t, fixture.client, "reviewer", Ready)
+	if restarted.Creation.CreationID == resumed.Creation.CreationID {
+		t.Fatal("restart reused creation")
+	}
+	if _, err := fixture.client.Remove(t.Context(), Remove{
+		Name:             "reviewer",
+		ExpectedRevision: restarted.Companion.Revision,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	awaitPhase(t, fixture.client, "reviewer", Stopped)
+	old := fixture.client
+	fixture.stopSteward(t)
+	if closed := request[agentactor.Closed](t, fixture.system, fixture.authority, agentregistry.CloseAgent{
+		Creation: fixture.input.Creation,
+	}); closed.Err != nil {
+		t.Fatal(closed.Err)
+	}
+	fixture.input.Creation.CreationID = "second"
+	fixture.input.Restore = true
+	fixture.open(t)
+	items, err := fixture.client.List(t.Context())
+	if err != nil || len(items) != 1 || !items[0].Companion.Removed || items[0].Creation.CreationID != "" {
+		t.Fatalf("removed Companion resurrected: %+v %v", items, err)
+	}
+	if _, err := old.List(t.Context()); !errors.Is(err, agentregistry.ErrCreation) {
+		t.Fatalf("stale Client retained access: %v", err)
+	}
+	if _, err := fixture.client.Create(t.Context(), Create{
+		Name:    "reviewer",
+		Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	replacement := awaitPhase(t, fixture.client, "reviewer", Ready)
+	if replacement.Creation.AgentID == ready.Creation.AgentID {
+		t.Fatal("recreation reused removed child Session")
+	}
+}
+
+func TestStewardRemovalWaitsForBusyChildAndRejectsNewInput(t *testing.T) {
+	fixture := newStewardship(t)
+	if _, err := fixture.client.Create(t.Context(), Create{
+		Name:    "busy",
+		Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ready := awaitPhase(t, fixture.client, "busy", Ready)
+	child := request[agentregistry.Ready](t, fixture.system, fixture.authority, agentregistry.FindAgent{
+		AgentID: ready.Creation.AgentID,
+	})
+	if result := request[agentactor.MaintenanceAccepted](t, fixture.system, child.Executor, agentactor.BeginMaintenance{
+		CreationID: ready.Creation.CreationID,
+		RequestID:  "current-work",
+		Worker:     fixture.configuration,
+	}); result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if _, err := fixture.client.Remove(t.Context(), Remove{
+		Name:             "busy",
+		ExpectedRevision: ready.Companion.Revision,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	awaitPhase(t, fixture.client, "busy", Draining)
+	// The Agent processes the preparation request before acknowledging this read.
+	input, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
+		Content: []agentmessage.ContentBlock{agentmessage.NewTextBlock("new task")},
+		Source:  agentmessage.UserMessageSource{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Wait for the actual input owner to observe closing, rather than assuming a
+	// management phase implies that its asynchronous request already arrived.
+	for {
+		result := request[agentactor.MaintenanceAccepted](t, fixture.system, child.Executor, agentactor.BeginMaintenance{
+			CreationID: ready.Creation.CreationID,
+			RequestID:  "probe",
+			Worker:     fixture.configuration,
+		})
+		if errors.Is(result.Err, agent.ErrClosing) {
+			break
+		}
+		if !errors.Is(result.Err, agent.ErrBusy) {
+			t.Fatalf("unexpected admission: %v", result.Err)
+		}
+	}
+	if result := request[loopactor.Changed](t, fixture.system, child.Executor, loopactor.Followup{
+		CreationID: ready.Creation.CreationID,
+		Message:    input,
+	}); !errors.Is(result.Err, agent.ErrClosing) {
+		t.Fatalf("draining accepted input: %v", result.Err)
+	}
+	activity := request[loopactor.Activity](t, fixture.system, child.Executor, loopactor.ReadActivity{
+		CreationID: ready.Creation.CreationID,
+	})
+	if activity.Status != agent.StatusRunning {
+		t.Fatal("work ended before its owner completed")
+	}
+	if result := request[agentactor.MaintenanceFinished](t, fixture.system, child.Executor, agentactor.FinishMaintenance{
+		CreationID: ready.Creation.CreationID,
+		RequestID:  "current-work",
+	}); result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	awaitPhase(t, fixture.client, "busy", Stopped)
+}
+
+func TestStewardSettlesLateCreationAfterRemoveOrClose(t *testing.T) {
+	for _, shutdownParent := range []bool{false, true} {
+		label := "remove"
+		if shutdownParent {
+			label = "close"
+		}
+		t.Run(label, func(t *testing.T) {
+			fixture := newStewardship(t)
+			gate := &creationGate{
+				entered:  make(chan struct{}),
+				canceled: make(chan struct{}),
+				release:  make(chan struct{}),
+			}
+			defer func() {
+				select {
+				case <-gate.release:
+				default:
+					close(gate.release)
+				}
+			}()
+			fixture.creator.mu.Lock()
+			fixture.creator.gate = gate
+			fixture.creator.mu.Unlock()
+			created, err := fixture.client.Create(t.Context(), Create{
+				Name:    "late",
+				Enabled: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-gate.entered:
+			case <-time.After(time.Second):
+				t.Fatal("startup did not begin")
+			}
+			completed := make(chan error, 1)
+			if shutdownParent {
+				go func() { completed <- fixture.client.Close(t.Context()) }()
+			} else {
+				_, err = fixture.client.Remove(t.Context(), Remove{
+					Name:             "late",
+					ExpectedRevision: created.Companion.Revision,
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			select {
+			case <-gate.canceled:
+			case <-time.After(time.Second):
+				t.Fatal("pending startup was not cancelled")
+			}
+			if shutdownParent {
+				select {
+				case failure := <-completed:
+					t.Fatalf("close forgot outstanding creation: %v", failure)
+				default:
+				}
+			}
+			close(gate.release)
+			if shutdownParent {
+				select {
+				case failure := <-completed:
+					if failure != nil {
+						t.Fatal(failure)
+					}
+				case <-time.After(5 * time.Second):
+					t.Fatal("close did not settle late creation")
+				}
+			}
+			awaitPhase(t, fixture.client, "late", Stopped)
+			found := request[agentregistry.Ready](t, fixture.system, fixture.authority, agentregistry.FindAgent{
+				AgentID: created.Companion.ChildSessionID,
+			})
+			if found.Err == nil {
+				t.Fatal("late creation remained ready")
+			}
+			parent := request[agentregistry.Ready](t, fixture.system, fixture.authority, agentregistry.FindAgent{
+				AgentID: fixture.input.Creation.AgentID,
+			})
+			if parent.Err != nil {
+				t.Fatal("Steward closed parent", parent.Err)
+			}
+		})
+	}
+}
+
+func TestStewardFailedStartupCanRestartAndCompanionCannotOwnSteward(t *testing.T) {
+	fixture := newStewardship(t)
+	fixture.creator.mu.Lock()
+	fixture.creator.failure = errors.New("injected preparation failure")
+	fixture.creator.mu.Unlock()
+	if _, err := fixture.client.Create(t.Context(), Create{
+		Name:    "retry",
+		Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	failed := awaitPhase(t, fixture.client, "retry", StartFailed)
+	// The failed creation is removed asynchronously before restart admission.
+	for failed.Creation.CreationID != "" {
+		failed = awaitPhase(t, fixture.client, "retry", StartFailed)
+	}
+	if failed.Err == nil {
+		t.Fatal("startup failure disappeared")
+	}
+	fixture.creator.mu.Lock()
+	fixture.creator.failure = nil
+	fixture.creator.mu.Unlock()
+	if _, err := fixture.client.Restart(t.Context(), Restart{
+		Name:             "retry",
+		ExpectedRevision: failed.Companion.Revision,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ready := awaitPhase(t, fixture.client, "retry", Ready)
+	if ready.Companion.ChildSessionID != failed.Companion.ChildSessionID {
+		t.Fatal("retry replaced durable child identity")
+	}
+	route := request[sessionregistry.Endpoint](t, fixture.system, fixture.sessions, sessionregistry.ResolveSession{
+		SessionID:  ready.Creation.AgentID,
+		CreationID: ready.Creation.CreationID,
+	})
+	recursive, err := acceptSteward(t.Context(), fixture.system, start{
+		Parent:   ready.Creation,
+		Registry: fixture.authority,
+		Session:  route.Target,
+		Creator:  fixture.creator,
+		Settings: fixture.creator.settings,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observed := awaitSteward(t, recursive, StartFailed); !errors.Is(observed.Err, agent.ErrRole) {
+		t.Fatalf("recursive Steward accepted: %+v", observed)
+	}
+	if err := recursive.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStewardReenableSettlesCancelledStartupBeforeNewCreation(t *testing.T) {
+	fixture := newStewardship(t)
+	gate := &creationGate{
+		entered:  make(chan struct{}),
+		canceled: make(chan struct{}),
+		release:  make(chan struct{}),
+	}
+	defer func() {
+		select {
+		case <-gate.release:
+		default:
+			close(gate.release)
+		}
+	}()
+	fixture.creator.mu.Lock()
+	fixture.creator.gate = gate
+	fixture.creator.mu.Unlock()
+	created, err := fixture.client.Create(t.Context(), Create{
+		Name:    "reenable",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-gate.entered:
+	case <-time.After(time.Second):
+		t.Fatal("startup did not begin")
+	}
+	disabled, err := fixture.client.Configure(t.Context(), Configure{
+		Name:             "reenable",
+		ExpectedRevision: created.Companion.Revision,
+		Enabled:          false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-gate.canceled:
+	case <-time.After(time.Second):
+		t.Fatal("startup was not cancelled")
+	}
+	enabled, err := fixture.client.Configure(t.Context(), Configure{
+		Name:             "reenable",
+		ExpectedRevision: disabled.Companion.Revision,
+		Enabled:          true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enabled.Phase != Stopping || enabled.Creation != created.Creation {
+		t.Fatalf("reenable abandoned the cancelled creation: %+v", enabled)
+	}
+	close(gate.release)
+	ready := awaitPhase(t, fixture.client, "reenable", Ready)
+	if ready.Creation.AgentID != created.Creation.AgentID || ready.Creation.CreationID == created.Creation.CreationID {
+		t.Fatalf("reenable reused cancelled lifetime: before=%+v after=%+v", created, ready)
+	}
+	obsolete := request[agentregistry.Inspected](t, fixture.system, fixture.authority, agentregistry.Inspect{
+		Creation: created.Creation,
+	})
+	if !errors.Is(obsolete.Err, agentregistry.ErrCreation) {
+		t.Fatalf("old creation remained admitted: %v", obsolete.Err)
+	}
+}
+
+// acceptSteward sends the same asynchronous start message as Installer.
+func acceptSteward(ctx context.Context, system goakt.ActorSystem, input start) (*Client, error) {
+	target, err := stewardRoute(ctx, system, input.Parent)
+	if err != nil {
+		return nil, err
+	}
+	result, err := ask[response](ctx, system, target, input)
+	if err != nil {
+		return nil, err
+	}
+	if result.err != nil {
+		return nil, result.err
+	}
+	return &Client{
+		system: system,
+		target: target,
+		parent: input.Parent,
+	}, nil
+}
+
+func awaitSteward(t *testing.T, sender *Client, expected Phase) Status {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for {
+		observed, err := sender.Status(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if observed.Phase == expected {
+			return observed
+		}
+		if observed.Phase == StartFailed && expected != StartFailed {
+			t.Fatalf("Steward recovery failed: %v", observed.Err)
+		}
+		select {
+		case <-tick.C:
+		case <-ctx.Done():
+			t.Fatalf("Steward never reached %s: %+v", expected, observed)
+		}
+	}
+}
+
+func (fixture *stewardship) stopSteward(t *testing.T) {
+	t.Helper()
+	if err := fixture.client.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.system.TellGrain(t.Context(), fixture.client.target, new(goakt.PoisonPill)); err != nil {
+		t.Fatal(err)
+	}
+}

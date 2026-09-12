@@ -97,6 +97,8 @@ func NewGateway(
 			newSessionID:     newSessionID,
 		},
 		modelUseCases: &sessionModels{
+			agents:    ports.Agents,
+			history:   ports.Persistence,
 			access:    access,
 			models:    ports.Models,
 			sessions:  ports.Sessions,

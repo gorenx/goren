@@ -25,6 +25,14 @@ interface RPCReceipt {
   reason?: string
 }
 
+// RPCError retains the server's business code so an editor can handle conflicts.
+export class RPCError extends Error {
+  constructor(message: string, readonly code?: string, readonly details?: unknown) {
+    super(message)
+    this.name = 'RPCError'
+  }
+}
+
 function decodeEnvelope(value: unknown, translateText: Translator): RPCEnvelope {
   if (!isRecord(value)) throw new Error(translateText('error.invalidRPCEnvelope'))
   const rpcId = recordString(value, 'rpcId')
@@ -33,7 +41,7 @@ function decodeEnvelope(value: unknown, translateText: Translator): RPCEnvelope 
     throw new Error(translateText('error.invalidRPCResult'))
   }
   const errorValue = resultValue.error
-  const error = isRecord(errorValue) ? { message: recordString(errorValue, 'message') } : undefined
+  const error = isRecord(errorValue) ? { message: recordString(errorValue, 'message'), code: recordString(errorValue, 'code'), details: errorValue.details } : undefined
   return { rpcId, result: { ok: resultValue.ok, value: resultValue.value, error } }
 }
 
@@ -72,7 +80,7 @@ export class HarnessAPI {
     if (!response.ok) throw new Error(this.#translateText('error.requestFailed', { method, status: response.status }))
     const envelope = decodeEnvelope(await response.json(), this.#translateText)
     if (envelope.rpcId !== rpcId) throw new Error(this.#translateText('error.wrongRPCID', { method }))
-    if (!envelope.result.ok) throw new Error(envelope.result.error?.message ?? this.#translateText('error.methodFailed', { method }))
+    if (!envelope.result.ok) throw new RPCError(envelope.result.error?.message ?? this.#translateText('error.methodFailed', { method }), envelope.result.error?.code, envelope.result.error?.details)
     return envelope.result.value as T
   }
 

@@ -5,7 +5,6 @@ package tool
 import (
 	"context"
 	"errors"
-	"github.com/google/uuid"
 	"strings"
 
 	"github.com/gorenx/goren/llm"
@@ -18,13 +17,6 @@ type Resource interface {
 	Close(context.Context) error
 }
 
-// Provider constructs an implementation from bound configuration and borrowed
-// capabilities. Each Open returns independent owned resources, including any
-// partially constructed resources that still require cleanup when Open fails.
-type Provider interface {
-	Open(context.Context) (Implementation, error)
-}
-
 // Implementation combines tool behavior with optional owned resources.
 // Each prepared implementation must own a distinct resource lifetime.
 type Implementation struct {
@@ -34,17 +26,15 @@ type Implementation struct {
 
 // Revision identifies the unique update that installed an implementation.
 // It is opaque, never ordered, and independent of the model-facing schema version.
+// Together with the tool name it selects the implementation for execution.
+// Callers must use a fresh value for each update and retain it across retries.
 type Revision string
-
-// Identity identifies one committed implementation independently of its update request.
-type Identity string
 
 // Tool owns current, candidate and retiring implementations of one logical tool.
 // It has no scheduler or framework references and must not be used concurrently.
 type Tool struct {
 	name     string
 	revision Revision
-	identity Identity
 	current  *Implementation
 	// candidate holds the validated replacement until Runtime switches the replacement.
 	// Provision creates it without replacing current or releasing current's resources.
@@ -144,7 +134,6 @@ func (owner *Tool) Commit(target Revision) error {
 	owner.retiring = owner.current
 	owner.current = &owner.candidate.body
 	owner.revision = target
-	owner.identity = Identity(uuid.NewString())
 	owner.candidate = nil
 	return nil
 }
@@ -235,12 +224,12 @@ func closeResource(ctx context.Context, owned Resource) error {
 	return owned.Close(ctx)
 }
 
-// Binding returns the current implementation identity and borrowed execution contract.
+// Binding returns the committed revision and borrowed execution contract.
 // The caller must drain executions before replacing or closing the implementation.
-func (owner *Tool) Binding() (Identity, tools.Descriptor, error) {
+func (owner *Tool) Binding() (Revision, tools.Descriptor, error) {
 	definition, err := owner.Definition(owner.revision)
 	if err != nil {
 		return "", tools.Descriptor{}, err
 	}
-	return owner.identity, definition.Describe(), nil
+	return owner.revision, definition.Describe(), nil
 }

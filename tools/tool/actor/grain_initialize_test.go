@@ -15,10 +15,11 @@ func TestInitializationRetryConfirmsBindingWithoutReplacingImplementation(t *tes
 	source := &provider{}
 	system, target := startTool(t, source)
 	input := toolactor.Initialize{
-		CreationID: "creation",
-		AgentID:    "conversation",
-		Name:       toolaskuser.Name,
-		Authority:  toolAuthority(t, system),
+		AgentCreationID: "agent-creation",
+		CreationID:      "creation",
+		AgentID:         "conversation",
+		Name:            toolaskuser.Name,
+		Authority:       toolAuthority(t, system),
 	}
 	if reply := ask[toolactor.Completion](t, system, target, input); reply.Err != nil {
 		t.Fatalf("same binding retry rejected: %v", reply.Err)
@@ -27,13 +28,13 @@ func TestInitializationRetryConfirmsBindingWithoutReplacingImplementation(t *tes
 	if reply := ask[toolactor.Completion](t, system, target, input); reply.Err != nil {
 		t.Fatal(reply.Err)
 	}
-	retained := invocation(currentIdentity(t, system, target))
+	retained := invocation(currentRevision(t, system, target))
 	committed := ask[toolactor.Completion](t, system, target, toolactor.Commit{
 		CreationID: "creation",
 		Revision:   "initial",
 	})
-	if committed.Err != nil || currentIdentity(t, system, target) != retained.Implementation {
-		t.Fatal("commit retry replaced the implementation identity", committed.Err)
+	if committed.Err != nil || currentRevision(t, system, target) != retained.Revision {
+		t.Fatal("commit retry changed the committed revision", committed.Err)
 	}
 
 	if reply := ask[tools.BodyResult](t, system, target, retained); reply.Err != nil || source.opens.Load() != 1 {
@@ -61,9 +62,11 @@ func TestInitializationRetryConfirmsBindingWithoutReplacingImplementation(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{"creation", "agent", "name", "authority"} {
+	for _, field := range []string{"creation", "agentCreation", "agent", "name", "authority"} {
 		changed := input
 		switch field {
+		case "agentCreation":
+			changed.AgentCreationID = "other"
 		case "creation":
 			changed.CreationID = "other"
 		case "agent":

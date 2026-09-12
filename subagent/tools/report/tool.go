@@ -7,9 +7,10 @@ import (
 
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
-	"github.com/gorenx/goren/subagent"
 	"github.com/gorenx/goren/tools"
 )
+
+const description = "Report selected self-contained content to the agent that started you. Reporting does not finish your work and only your direct parent receives it."
 
 var reportParameters = json.RawMessage(`{
   "type": "object",
@@ -33,31 +34,40 @@ type reportArguments struct {
 	Output string `json:"output"`
 }
 
-type reporter interface {
-	Report(
-		context.Context,
-		session.SessionID,
-		string,
-		Delivery,
-	) (agentmessage.MessageID, error)
+// Report contains the caller's selected output and the configured parent
+// scheduling policy. The recipient is always derived from the direct relationship.
+type Report struct {
+	ChildSessionID session.SessionID
+	Output         string
+	Delivery       Delivery
+}
+
+// Reporter delivers selected content to the caller's direct parent. The context
+// carries AgentCreationID for exact lifetime checks; accepting a report does not
+// complete the child's turn or imply that the parent has consumed it.
+type Reporter interface {
+	Report(context.Context, Report) (agentmessage.MessageID, error)
 }
 
 // reportTool translates one model Tool call into a direct parent Agent Inbox
 // operation. It has no Plugin registration lifecycle.
 type reportTool struct {
-	reporter   reporter
+	reporting  Reporter
 	scheduling Delivery
 }
 
 func newReportTool(
-	reporting reporter,
+	reporting Reporter,
 	selectedDelivery Delivery,
 ) (*reportTool, error) {
 	if reporting == nil {
 		return nil, errors.New("subagent report: Reporter is required")
 	}
+	if selectedDelivery != Quiet && selectedDelivery != NextStep {
+		return nil, errors.New("subagent report: unsupported delivery")
+	}
 	return &reportTool{
-		reporter:   reporting,
+		reporting:  reporting,
 		scheduling: selectedDelivery,
 	}, nil
 }
@@ -65,10 +75,10 @@ func newReportTool(
 func (adapter *reportTool) definition() tools.ToolDefinition {
 	return tools.ToolDefinition{
 		Name:        "report",
-		Description: "Report selected self-contained content to the agent that started you. Reporting does not finish your work and only your direct parent receives it.",
-		Parameters:  reportParameters,
+		Description: description,
+		Parameters:  append(json.RawMessage(nil), reportParameters...),
 		Output: tools.ToolOutputDefinition{
-			Schema:   reportOutput,
+			Schema:   append(json.RawMessage(nil), reportOutput...),
 			Renderer: adapter,
 		},
 		Executor: adapter,
@@ -93,18 +103,13 @@ func (adapter *reportTool) Execute(
 	if decodeErr := json.Unmarshal(rawArguments, &request); decodeErr != nil {
 		return nil, decodeErr
 	}
-	messageID, messageErr := adapter.reporter.Report(
-		runContext.Context,
-		childID,
-		request.Output,
-		adapter.scheduling,
-	)
+	messageID, messageErr := adapter.reporting.Report(runContext.Context, Report{
+		ChildSessionID: childID,
+		Output:         request.Output,
+		Delivery:       adapter.scheduling,
+	})
 	if messageErr != nil {
-		return nil, &subagent.Error{
-			Code:    subagent.ErrorParentUnavailable,
-			Message: "direct parent is not live; report was not delivered",
-			Cause:   messageErr,
-		}
+		return nil, messageErr
 	}
 	return json.Marshal(struct {
 		MessageID string `json:"messageId"`

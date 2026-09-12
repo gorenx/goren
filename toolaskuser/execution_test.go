@@ -34,7 +34,7 @@ func TestToolExecutionUsesQuestionServiceAndSessionIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	coordinator, err := execution.NewScheduler([]tools.Descriptor{definition.Describe()}, execution.Policies{}, questionBody{
+	coordinator, err := execution.NewScheduler([]tools.Descriptor{definition.Describe()}, questionBody{
 		handler: definition.Executor,
 	})
 	if err != nil {
@@ -45,7 +45,8 @@ func TestToolExecutionUsesQuestionServiceAndSessionIdentity(t *testing.T) {
 		CallID:    "ask-1",
 		Name:      Name,
 		Arguments: json.RawMessage(`{"questions":[{"id":"q","question":"Continue?"}]}`),
-	})
+	}, execution.Policies{},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

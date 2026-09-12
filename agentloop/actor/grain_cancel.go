@@ -41,6 +41,13 @@ func (owner *Grain) cancelOperations(gc *goakt.GrainContext, completed completeC
 		return
 	}
 	if owner.callID != "" {
+		// Close already cancels in-flight I/O and owns resource release. The
+		// worker may have removed this call while its close reply is in transit.
+		// Keep waiting for that reply instead of cancelling a released call.
+		if owner.stream != nil {
+			owner.finishCancellation(gc, completed)
+			return
+		}
 		if owner.modelCancellation != nil {
 			completed.err = errors.Join(completed.err, errors.New("agentloop: model cancellation acknowledgement is pending"))
 			owner.finishCancellation(gc, completed)
@@ -54,7 +61,10 @@ func (owner *Grain) cancelOperations(gc *goakt.GrainContext, completed completeC
 	for _, request := range owner.cancellations {
 		requests = append(requests, request)
 	}
-	for identifier := range owner.calls {
+	for identifier, phase := range owner.calls {
+		if phase != toolCallActive {
+			continue
+		}
 		requests = append(requests, cancellationRequest{
 			target: owner.tools,
 			message: runtimeactor.CancelCall{

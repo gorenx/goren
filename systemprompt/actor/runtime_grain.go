@@ -19,6 +19,12 @@ var ErrAsyncRequest = errors.New("systemprompt: asynchronous request required")
 // RuntimeGrain schedules one Agent's assembly independently of shared registration.
 type RuntimeGrain struct {
 	runtime        *systemprompt.Runtime
+	layer          *systemprompt.PromptLayer
+	settings       systemprompt.Config
+	sections       []systemprompt.PromptSection
+	registry       *goakt.GrainIdentity
+	version        uint64
+	configuration  *goakt.GrainReply
 	assembly       *assembly
 	closing        *goakt.GrainReply
 	closed         bool
@@ -42,6 +48,12 @@ func (*RuntimeGrain) OnActivate(context.Context, *goakt.GrainProps) error { retu
 
 // OnDeactivate cancels work on forced shutdown; normal CloseRuntime drains first.
 func (owner *RuntimeGrain) OnDeactivate(context.Context, *goakt.GrainProps) error {
+	if owner.configuration != nil {
+		owner.configuration.Response(Completion{
+			Err: ErrUnavailable,
+		})
+		owner.configuration = nil
+	}
 	if owner.initialization != nil {
 		owner.finishInitialization(owner.initialization, ErrUnavailable)
 	}
@@ -59,6 +71,12 @@ func (owner *RuntimeGrain) OnDeactivate(context.Context, *goakt.GrainProps) erro
 		})
 		owner.closing = nil
 	}
+	owner.runtime = nil
+	owner.layer = nil
+	owner.settings = systemprompt.Config{}
+	owner.sections = nil
+	owner.registry = nil
+	owner.version = 0
 	return nil
 }
 
@@ -66,27 +84,41 @@ func (owner *RuntimeGrain) OnDeactivate(context.Context, *goakt.GrainProps) erro
 func (owner *RuntimeGrain) OnReceive(gc *goakt.GrainContext) {
 	switch incoming := gc.Message().(type) {
 	case ReadRuntime:
-		if owner.runtime == nil || owner.closed || owner.closing != nil {
+		if owner.runtime == nil ||
+			owner.closed ||
+			owner.closing != nil {
 			gc.Response(RuntimeView{
 				Err: ErrUnavailable,
 			})
 			return
 		}
-		gc.Response(RuntimeView{})
+		gc.Response(RuntimeView{
+			Config: owner.settings.Clone(),
+		})
 	case InitializeRuntime:
 		owner.initializeRuntime(gc, incoming)
 	case promptPrepared:
 		owner.initializeTools(gc, incoming)
 	case ApplyTools:
-		if owner.runtime == nil || owner.closed || owner.closing != nil {
+		if owner.runtime == nil ||
+			owner.closed ||
+			owner.closing != nil {
 			gc.Response(Completion{
 				Err: ErrUnavailable,
+			})
+			return
+		}
+		if owner.configuration != nil {
+			gc.Response(Completion{
+				Err: ErrBusy,
 			})
 			return
 		}
 		gc.Response(Completion{
 			Err: owner.runtime.ApplyTools(incoming.AgentID, incoming.Definitions),
 		})
+	case ApplyConfiguration:
+		owner.applyConfiguration(gc, incoming)
 	case Assemble:
 		owner.startAssembly(gc, incoming)
 	case assemblyFinished:
@@ -96,6 +128,11 @@ func (owner *RuntimeGrain) OnReceive(gc *goakt.GrainContext) {
 			owner.assembly = nil
 			if owner.closing != nil {
 				owner.runtime = nil
+				owner.layer = nil
+				owner.settings = systemprompt.Config{}
+				owner.sections = nil
+				owner.registry = nil
+				owner.version = 0
 				owner.closed = true
 				owner.closing.Response(Completion{})
 				owner.closing = nil
@@ -108,7 +145,7 @@ func (owner *RuntimeGrain) OnReceive(gc *goakt.GrainContext) {
 		}
 		gc.Response(Completion{})
 	case CloseRuntime:
-		if owner.closing != nil {
+		if owner.closing != nil || owner.configuration != nil {
 			gc.Response(Completion{
 				Err: ErrBusy,
 			})
@@ -126,6 +163,11 @@ func (owner *RuntimeGrain) OnReceive(gc *goakt.GrainContext) {
 			return
 		}
 		owner.runtime = nil
+		owner.layer = nil
+		owner.settings = systemprompt.Config{}
+		owner.sections = nil
+		owner.registry = nil
+		owner.version = 0
 		owner.closed = true
 		gc.Response(Completion{})
 	default:
@@ -136,9 +178,11 @@ func (owner *RuntimeGrain) OnReceive(gc *goakt.GrainContext) {
 func (owner *RuntimeGrain) startAssembly(gc *goakt.GrainContext, request Assemble) {
 	var err error
 	switch {
-	case owner.runtime == nil || owner.closed || owner.closing != nil:
+	case owner.runtime == nil ||
+		owner.closed ||
+		owner.closing != nil:
 		err = ErrUnavailable
-	case owner.assembly != nil:
+	case owner.assembly != nil || owner.configuration != nil:
 		err = ErrBusy
 	case request.ID == "":
 		err = errors.New("systemprompt: assembly ID is required")

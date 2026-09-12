@@ -11,13 +11,13 @@ import (
 
 var variableNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
-const disabledRuntimeContextSuppressor = "configuration:runtime-context-disabled"
-
 // PromptLayer owns one System Prompt layer independently from Plugin lifecycle.
 // Inherited definitions are value snapshots; it never retains a parent or Plugin.
 // Its owner must serialize registration, capture, base updates, and close.
 type PromptLayer struct {
 	settings ValidatedConfig
+	// baseline contains configuration-derived content, never extension registrations.
+	baseline *promptLayerSnapshot
 	store    *promptStore
 	base     Snapshot
 }
@@ -44,6 +44,13 @@ func (owner *PromptLayer) AddSection(
 			"systemprompt: prompt section %q order must be a finite number",
 			definition.Name,
 		)
+	}
+	if owner.baseline != nil {
+		for _, entry := range owner.baseline.sections {
+			if entry.Name == definition.Name {
+				return "", fmt.Errorf("systemprompt: prompt section %q is already defined by configuration", definition.Name)
+			}
+		}
 	}
 	return owner.store.addSection(definition)
 }
@@ -134,15 +141,48 @@ func (owner *PromptLayer) Assemble(ctx context.Context, assemblyContext Assemble
 // Capture freezes registration membership for one model request.
 func (owner *PromptLayer) Capture() Snapshot {
 	layers := append([]promptLayerSnapshot(nil), owner.base.layers...)
+	baseline := owner.baseline
+	if baseline == nil {
+		baseline = owner.base.baseline
+	}
 	layers = append(layers, owner.store.capture())
 	order := slices.Clone(owner.settings.toolOrder)
 	if len(owner.base.layers) != 0 {
 		order = slices.Clone(owner.base.toolOrder)
 	}
 	return Snapshot{
+		baseline:  baseline,
 		layers:    layers,
 		toolOrder: order,
 	}
+}
+
+// ApplyBaseline atomically replaces configuration-owned definitions in a root
+// layer, retaining every unrelated registration and its removal identity.
+// Previously captured snapshots continue to describe the previous baseline.
+func (owner *PromptLayer) ApplyBaseline(ctx context.Context, input Config) error {
+	if err := validatePromptMutationContext(ctx); err != nil {
+		return err
+	}
+	if len(owner.base.layers) != 0 {
+		return errors.New("systemprompt: baseline configuration belongs to the root layer")
+	}
+	validated, err := ValidateConfig(input)
+	if err != nil {
+		return err
+	}
+	baseline := validated.definitions()
+	for _, entry := range baseline.sections {
+		if _, exists := owner.store.sections[entry.Name]; exists {
+			return fmt.Errorf("systemprompt: prompt section %q is already registered", entry.Name)
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	owner.settings = validated
+	owner.baseline = &baseline
+	return nil
 }
 
 // SetBase explicitly replaces inherited definitions with a captured value.
@@ -157,6 +197,7 @@ func (owner *PromptLayer) close() {
 	}
 	owner.store.clear()
 	owner.base = Snapshot{}
+	owner.baseline = nil
 
 }
 
@@ -164,4 +205,10 @@ func (owner *PromptLayer) close() {
 func (owner *PromptLayer) Close(context.Context) error {
 	owner.close()
 	return nil
+}
+
+// Configuration returns the root layer's adopted configuration as detached values.
+// Derived layers contain definitions rather than a separate configurable baseline.
+func (owner *PromptLayer) Configuration() Config {
+	return owner.settings.Configuration()
 }

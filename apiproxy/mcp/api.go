@@ -7,17 +7,18 @@ import (
 
 	"github.com/gorenx/goren/apiproxy/rpc"
 	"github.com/gorenx/goren/connection"
+	"github.com/gorenx/goren/session"
 )
 
-// ConnectRequest permits only a named HTTP endpoint, never subprocess execution.
-type ConnectRequest struct {
-	ServerName string `json:"serverName"`
-	URL        string `json:"url"`
+// ListRequest selects an existing Session's connection state.
+type ListRequest struct {
+	SessionID session.SessionID `json:"sessionId"`
 }
 
-// DisconnectRequest identifies one process-local connection.
-type DisconnectRequest struct {
-	ServerName string `json:"serverName"`
+// RetryRequest restores one configured target in an existing Session.
+type RetryRequest struct {
+	SessionID  session.SessionID `json:"sessionId"`
+	ServerName string            `json:"serverName"`
 }
 
 // View contains non-secret, detached management state.
@@ -28,32 +29,25 @@ type View struct {
 	ToolCount  int    `json:"toolCount"`
 }
 
-// Directory is the consumer-owned process MCP management port.
+// Directory is the consumer-owned port for Session MCP state and recovery.
 type Directory interface {
-	ConnectHTTP(context.Context, ConnectRequest) (View, error)
-	ListConnections(context.Context) ([]View, error)
-	Disconnect(context.Context, string) error
+	ListConnections(context.Context, session.SessionID) ([]View, error)
+	RetryConnection(context.Context, RetryRequest) error
 }
 
-// Register adds the explicitly scoped Goren extension to the existing RPC carrier.
+// Register adds Session-scoped MCP management to the existing RPC carrier.
 func Register(methods *rpc.Catalog, source Directory) error {
 	if source == nil {
 		return nil
 	}
-	if err := rpc.RegisterUnary(methods, "mcp.connect", decodeConnect, func(ctx context.Context, input rpc.Request[ConnectRequest]) (rpc.Outcome[View], error) {
-		value, err := source.ConnectHTTP(ctx, input.Payload)
+	if err := rpc.RegisterUnary(methods, "mcp.list", decodeList, func(ctx context.Context, input rpc.Request[ListRequest]) (rpc.Outcome[[]View], error) {
+		value, err := source.ListConnections(ctx, input.Payload.SessionID)
 		return managementOutcome(value, err), nil
 	}); err != nil {
 		return err
 	}
-	if err := rpc.RegisterUnary(methods, "mcp.list", decodeList, func(ctx context.Context, _ rpc.Request[struct{}]) (rpc.Outcome[[]View], error) {
-		value, err := source.ListConnections(ctx)
-		return managementOutcome(value, err), nil
-	}); err != nil {
-		return err
-	}
-	return rpc.RegisterUnary(methods, "mcp.disconnect", decodeDisconnect, func(ctx context.Context, input rpc.Request[DisconnectRequest]) (rpc.Outcome[struct{}], error) {
-		return managementOutcome(struct{}{}, source.Disconnect(ctx, input.Payload.ServerName)), nil
+	return rpc.RegisterUnary(methods, "mcp.retry", decodeRetry, func(ctx context.Context, input rpc.Request[RetryRequest]) (rpc.Outcome[struct{}], error) {
+		return managementOutcome(struct{}{}, source.RetryConnection(ctx, input.Payload)), nil
 	})
 }
 
@@ -65,29 +59,23 @@ func managementOutcome[V any](value V, err error) rpc.Outcome[V] {
 	return rpc.OK(value)
 }
 
-func decodeConnect(raw json.RawMessage) (ConnectRequest, []connection.ValidationIssue) {
-	fields, issues := managementFields(raw, "serverName", "url")
+func decodeRetry(raw json.RawMessage) (RetryRequest, []connection.ValidationIssue) {
+	fields, issues := managementFields(raw, "sessionId", "serverName")
+	identifier, identityIssues := rpc.RequiredString(fields, "sessionId", true)
 	name, nameIssues := rpc.RequiredString(fields, "serverName", true)
-	address, addressIssues := rpc.RequiredString(fields, "url", true)
-	issues = append(issues, nameIssues...)
-	issues = append(issues, addressIssues...)
-	return ConnectRequest{
-		ServerName: name,
-		URL:        address,
-	}, issues
-}
-
-func decodeDisconnect(raw json.RawMessage) (DisconnectRequest, []connection.ValidationIssue) {
-	fields, issues := managementFields(raw, "serverName")
-	name, nameIssues := rpc.RequiredString(fields, "serverName", true)
-	return DisconnectRequest{
+	issues = append(issues, identityIssues...)
+	return RetryRequest{
+		SessionID:  session.SessionID(identifier),
 		ServerName: name,
 	}, append(issues, nameIssues...)
 }
 
-func decodeList(raw json.RawMessage) (struct{}, []connection.ValidationIssue) {
-	_, issues := managementFields(raw)
-	return struct{}{}, issues
+func decodeList(raw json.RawMessage) (ListRequest, []connection.ValidationIssue) {
+	fields, issues := managementFields(raw, "sessionId")
+	identifier, identityIssues := rpc.RequiredString(fields, "sessionId", true)
+	return ListRequest{
+		SessionID: session.SessionID(identifier),
+	}, append(issues, identityIssues...)
 }
 
 func managementFields(raw json.RawMessage, allowed ...string) (map[string]json.RawMessage, []connection.ValidationIssue) {

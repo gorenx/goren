@@ -9,28 +9,24 @@ describe('MCPDialog', () => {
   let mounted: Root
   let calls: { method: string; payload: unknown }[]
   let connections: object[]
-  let rejectConnect: boolean
+  let rejectRetry: boolean
 
   beforeEach(() => {
     container = document.createElement('div')
     document.body.append(container)
     mounted = createRoot(container)
     calls = []
-    connections = []
-    rejectConnect = false
+    connections = [{ serverName: 'fixture', transport: 'streamable-http', status: 'failed', toolCount: 0 }]
+    rejectRetry = false
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
       const body = JSON.parse(String(init.body)) as { rpcId: string; method: string; payload: unknown }
       calls.push({ method: body.method, payload: body.payload })
       let value: unknown = connections
-      if (body.method === 'mcp.connect') {
-        if (rejectConnect) return Response.json({ rpcId: body.rpcId, result: { ok: false, error: { message: 'private endpoint details' } } })
+      if (body.method === 'mcp.retry') {
+        if (rejectRetry) return Response.json({ rpcId: body.rpcId, result: { ok: false, error: { message: 'private endpoint details' } } })
         const request = body.payload as { serverName: string }
         value = { serverName: request.serverName, transport: 'streamable-http', status: 'connected', toolCount: 2 }
         connections = [value as object]
-      }
-      if (body.method === 'mcp.disconnect') {
-        connections = []
-        value = {}
       }
       return Response.json({ rpcId: body.rpcId, result: { ok: true, value } })
     }))
@@ -42,44 +38,33 @@ describe('MCPDialog', () => {
   })
 
   async function renderDialog(): Promise<void> {
-    await act(async () => mounted.render(<I18nProvider><MCPDialog onClose={() => {}} /></I18nProvider>))
+    await act(async () => mounted.render(<I18nProvider><MCPDialog sessionId="agent" onClose={() => {}} onOpenSettings={() => {}} /></I18nProvider>))
   }
 
-  async function fill(selector: string, value: string): Promise<void> {
-    const input = container.querySelector<HTMLInputElement>(selector)!
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value)
-      input.dispatchEvent(new Event('input', { bubbles: true }))
-    })
+  async function retryServer(): Promise<void> {
+    await act(async () => container.querySelector<HTMLButtonElement>('.credential-remove')!.click())
   }
 
-  async function connectServer(): Promise<void> {
-    await fill('#mcp-name', 'fixture')
-    await fill('#mcp-url', 'http://localhost:3000/mcp')
-    await act(async () => container.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })))
-  }
-
-  it('connects an HTTP URL, displays tools and disconnects without a page reload', async () => {
+  it('queries and retries only the selected session without temporary configuration', async () => {
     await renderDialog()
-    await connectServer()
-    expect(calls).toContainEqual({ method: 'mcp.connect', payload: { serverName: 'fixture', url: 'http://localhost:3000/mcp' } })
+    expect(calls).toContainEqual({ method: 'mcp.list', payload: { sessionId: 'agent' } })
+    await retryServer()
+    expect(calls).toContainEqual({ method: 'mcp.retry', payload: { sessionId: 'agent', serverName: 'fixture' } })
     expect(container.textContent).toContain('fixture')
     expect(container.textContent).toContain('2')
-    expect(container.querySelector<HTMLInputElement>('#mcp-url')!.value).toBe('')
-    await act(async () => container.querySelector<HTMLButtonElement>('.credential-remove')!.click())
-    expect(calls).toContainEqual({ method: 'mcp.disconnect', payload: { serverName: 'fixture' } })
-    expect(container.querySelector('.credential-remove')).toBeNull()
+    expect(container.querySelector('form')).toBeNull()
+    expect(calls.some(call => call.method === 'mcp.connect' || call.method === 'mcp.disconnect')).toBe(false)
   })
 
   it('shows safe failures and permits retry', async () => {
-    rejectConnect = true
+    rejectRetry = true
     await renderDialog()
-    await connectServer()
+    await retryServer()
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('2026-07-28')
     expect(container.textContent).not.toContain('private endpoint details')
-    expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')!.disabled).toBe(false)
-    rejectConnect = false
-    await connectServer()
+    expect(container.querySelector<HTMLButtonElement>('.credential-remove')!.disabled).toBe(false)
+    rejectRetry = false
+    await retryServer()
     expect(container.querySelector('[role="alert"]')).toBeNull()
   })
 

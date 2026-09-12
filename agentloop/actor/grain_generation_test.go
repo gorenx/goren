@@ -64,6 +64,10 @@ func TestModelResultTimeoutClosesWithoutGeneratingAgain(t *testing.T) {
 			name: "close-unconfirmed",
 		},
 		{
+			name:      "cancel-during-close",
+			confirmed: true,
+		},
+		{
 			name:      "cancel-acknowledgement-missing",
 			confirmed: true,
 			cancel:    true,
@@ -103,7 +107,7 @@ func TestModelResultTimeoutClosesWithoutGeneratingAgain(t *testing.T) {
 			}
 			commands := make(chan any, 8)
 			endpoint, err := system.Spawn(ctx, "generation", &silentGeneration{
-				closeReply: confirmed,
+				closeReply: confirmed && name != "cancel-during-close",
 				commands:   commands,
 			})
 			if err != nil {
@@ -149,6 +153,29 @@ func TestModelResultTimeoutClosesWithoutGeneratingAgain(t *testing.T) {
 				}
 			}
 			closed := (<-commands).(llmactor.CloseCall)
+			if name == "cancel-during-close" {
+				// The capability owns Close already; its successful reply can still
+				// be in transit after it has removed the generation.
+				payload, err := system.AskGrain(ctx, target, Cancel{
+					CreationID: "test",
+					Cause:      agent.UserCancel{},
+				}, time.Second)
+				if err != nil || payload.(Changed).Err != nil {
+					t.Fatalf("cancel while close pending: %v, %v", payload, err)
+				}
+				activity, err := system.AskGrain(ctx, target, ReadActivity{
+					CreationID: "test",
+				}, time.Second)
+				if err != nil || activity.(Activity).Status != agent.StatusRunning {
+					t.Fatalf("cancel released execution before close acknowledgement: %v, %v", activity, err)
+				}
+				if err := system.TellGrain(ctx, closed.ReplyTo, llmactor.CallClosed{
+					CallID:    closed.CallID,
+					RequestID: closed.RequestID,
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if generated.CallID != closed.CallID || generated.RequestID == closed.RequestID {
 				t.Fatal("cleanup did not retain call identity with a new operation identity")
 			}

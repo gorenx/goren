@@ -21,7 +21,11 @@ export function CredentialDialog({ store, snapshot, onClose }: CredentialDialogP
   const input = useRef<HTMLInputElement>(null)
   const credential = snapshot.credential
 
-  useEffect(() => input.current?.focus(), [])
+  useEffect(() => {
+    void store.refreshCredential().catch(() => { /* The store reports the failure. */ })
+  }, [store])
+
+  useEffect(() => { if (snapshot.credentialLoaded) input.current?.focus() }, [snapshot.credentialLoaded])
 
   const save = async (event: React.FormEvent): Promise<void> => {
     event.preventDefault()
@@ -77,8 +81,10 @@ export function CredentialDialog({ store, snapshot, onClose }: CredentialDialogP
             </span>
           </div>
 
+          {snapshot.credentialPendingRestart && <p role="status" className="settings-help">{translate('settings.pendingRestart')}</p>}
+          {!snapshot.credentialLoaded && <button type="button" className="credential-cancel" onClick={() => { void store.refreshCredential().catch(() => { /* The store reports the failure. */ }) }}>{translate('settings.reload')}</button>}
           {credential?.writable === false
-            ? <p className="rounded-xl border border-black/[0.07] bg-sidebar px-3 py-3 text-xs leading-5 text-secondary">{translate('credential.environmentReadOnly')} <code className="font-mono text-[11px]">DEEPSEEK_API_KEY</code>{translate('credential.environmentSuffix')}</p>
+            ? <p className="rounded-xl border border-black/[0.07] bg-sidebar px-3 py-3 text-xs leading-5 text-secondary">{translate('credential.environmentReadOnly')} <code className="font-mono text-[11px]">{snapshot.credentialRef}</code>{translate('credential.environmentSuffix')}</p>
             : (
               <>
                 <label className="mb-2 block text-xs font-medium text-secondary" htmlFor="deepseek-api-key">{translate('credential.newKey')}</label>
@@ -90,17 +96,17 @@ export function CredentialDialog({ store, snapshot, onClose }: CredentialDialogP
                   className="credential-input"
                   placeholder={credential?.configured ? translate('credential.replacePlaceholder') : 'sk-…'}
                   value={draft}
-                  disabled={busy}
+                  disabled={busy || !snapshot.credentialLoaded}
                   onChange={event => { setDraft(event.target.value); setFailure(undefined) }}
                 />
                 {failure !== undefined && <p className="mt-2 text-xs text-red-600">{failure}</p>}
                 <div className="mt-5 flex items-center justify-between gap-3">
                   <div>
-                    {credential?.configured && <button type="button" className="credential-remove" disabled={busy} onClick={() => void remove()}>{translate('credential.remove')}</button>}
+                    {credential?.configured && <button type="button" className="credential-remove" disabled={busy || !snapshot.credentialLoaded} onClick={() => void remove()}>{translate('credential.remove')}</button>}
                   </div>
                   <div className="flex items-center gap-2">
                     <button type="button" className="credential-cancel" disabled={busy} onClick={onClose}>{translate('credential.later')}</button>
-                    <button type="submit" className="credential-save" disabled={busy || draft.length === 0}>{busy ? translate('credential.saving') : translate('credential.save')}</button>
+                    <button type="submit" className="credential-save" disabled={busy || !snapshot.credentialLoaded || draft.length === 0}>{busy ? translate('credential.saving') : translate('credential.save')}</button>
                   </div>
                 </div>
               </>

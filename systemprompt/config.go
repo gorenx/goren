@@ -111,3 +111,29 @@ func decodeConfigBool(encoded json.RawMessage, fieldName string) (bool, error) {
 	}
 	return selected, nil
 }
+
+// Clone detaches optional values and tool ordering from the caller's configuration.
+func (settings Config) Clone() Config {
+	if settings.IncludeHarnessIdentity != nil {
+		selected := *settings.IncludeHarnessIdentity
+		settings.IncludeHarnessIdentity = &selected
+	}
+	if settings.IncludeRuntimeContext != nil {
+		selected := *settings.IncludeRuntimeContext
+		settings.IncludeRuntimeContext = &selected
+	}
+	settings.ToolOrder = slices.Clone(settings.ToolOrder)
+	return settings
+}
+
+// Configuration returns the complete validated values with defaults resolved.
+func (input ValidatedConfig) Configuration() Config {
+	identity := input.includeHarnessIdentity
+	runtimeContext := input.includeRuntimeContext
+	return Config{
+		IncludeHarnessIdentity: &identity,
+		IncludeRuntimeContext:  &runtimeContext,
+		Persona:                input.persona,
+		ToolOrder:              slices.Clone(input.toolOrder),
+	}
+}

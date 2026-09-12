@@ -27,13 +27,13 @@ func (owner *Grain) receiveExecution(gc *goakt.GrainContext) bool {
 			gc.Response(Description{Err: errors.New("tools: description does not own a settled tool")})
 			return true
 		}
-		identity, descriptor, err := owner.business.Binding()
+		selected, descriptor, err := owner.business.Binding()
 		if err != nil {
 			gc.Response(Description{Err: err})
 		} else {
 			gc.Response(Description{
-				Implementation: identity,
-				Descriptor:     descriptor,
+				Revision:   selected,
+				Descriptor: descriptor,
 			})
 		}
 	case Execute:
@@ -86,7 +86,7 @@ func (owner *Grain) execute(gc *goakt.GrainContext, input Execute) {
 	if ctx == nil {
 		ctx = context.WithoutCancel(gc.Context())
 	}
-	work, cancel := context.WithCancel(ctx)
+	work, cancel := context.WithCancel(tools.WithAgentCreationID(ctx, owner.agentCreationID))
 	current := &call{
 		reply:  reply,
 		cancel: cancel,
@@ -102,7 +102,7 @@ func (owner *Grain) execute(gc *goakt.GrainContext, input Execute) {
 		return executed{
 			identifier: input.Invocation.CallID,
 			call:       current,
-			result:     business.Execute(work, input.Implementation, input.Invocation),
+			result:     business.Execute(work, input.Revision, input.Invocation),
 		}, nil
 	}); err != nil {
 		delete(owner.calls, input.Invocation.CallID)

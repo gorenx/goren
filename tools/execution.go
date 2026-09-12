@@ -43,6 +43,28 @@ type ToolRunContext struct {
 	effects   *bodyEffects
 }
 
+type agentCreationContextKey struct{}
+
+// WithAgentCreationID derives an execution context carrying one Agent lifetime.
+// ToolActor supplies its authorized binding and overwrites any upstream value.
+// This is call-scoped metadata, not authorization; consumers must still validate
+// the lifetime against its owner. The parent context must be non-nil.
+func WithAgentCreationID(parent context.Context, identifier string) context.Context {
+	return context.WithValue(parent, agentCreationContextKey{}, identifier)
+}
+
+// AgentCreationIDFromContext reads the Agent lifetime bound to this execution.
+// For example, a tool reads AgentCreationIDFromContext(runContext.Context) and
+// pairs it with runContext.Execution.SessionID when validating its caller.
+// An absent or empty identity returns false; it is never inferred from arguments.
+func AgentCreationIDFromContext(ctx context.Context) (string, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	identifier, found := ctx.Value(agentCreationContextKey{}).(string)
+	return identifier, found && identifier != ""
+}
+
 // DeferContext attaches one plugin-authored message to this toolCall's final
 // result. Agent Loop admits deferred messages only after the containing tool
 // result has been committed, preserving model call/result adjacency.

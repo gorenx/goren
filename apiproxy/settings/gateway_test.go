@@ -3,22 +3,16 @@ package settingsapi_test
 import (
 	"context"
 	"encoding/json"
-	rpc "github.com/gorenx/goren/apiproxy/rpc"
-	"reflect"
+	"errors"
+	"strings"
 	"testing"
 
+	"github.com/gorenx/goren/apiproxy/rpc"
 	api "github.com/gorenx/goren/apiproxy/settings"
 	"github.com/gorenx/goren/connection"
+	"github.com/gorenx/goren/mcpclient"
+	"github.com/gorenx/goren/settings"
 )
-
-type settingsDescriberFixture struct {
-	description api.DescribeValue
-	failure     error
-}
-
-func (fixture *settingsDescriberFixture) DescribeSettings(context.Context) (api.DescribeValue, error) {
-	return fixture.description, fixture.failure
-}
 
 func TestSettingsGatewayReportsAbsentProvider(t *testing.T) {
 	gateway := api.NewGateway(nil)
@@ -44,110 +38,182 @@ func TestSettingsGatewayReportsAbsentProvider(t *testing.T) {
 	}
 }
 
-func TestSettingsGatewayProjectsDetachedCatalog(t *testing.T) {
-	base := json.RawMessage(`{"apiKeyEnv":"DEEPSEEK_API_KEY"}`)
-	describer := &settingsDescriberFixture{
-		description: api.DescribeValue{
-			Writable:    false,
-			HasDocument: true,
-			Namespaces: []api.NamespaceView{{
-				NS:      "llm-deepseek",
-				Schema:  json.RawMessage(`{"uid":1,"refs":{}}`),
-				Value:   json.RawMessage(`{"apiKeyEnv":"DEEPSEEK_API_KEY"}`),
-				Base:    &base,
-				Applies: api.ApplyRestart,
-				Secrets: []api.SecretView{{
-					Path: []string{"apiKey"},
-					Set:  false,
-				}},
-				Revision: 2,
-			}},
+type storedSettings struct {
+	state   settings.State
+	failure error
+}
+
+func (storage *storedSettings) Load(context.Context) (settings.State, error) {
+	return storage.state.Clone(), storage.failure
+}
+
+func (storage *storedSettings) Commit(_ context.Context, change settings.ChangeSet) error {
+	if storage.failure != nil {
+		return storage.failure
+	}
+	if storage.state.Revision != change.ExpectedRevision {
+		return settings.ErrConflict
+	}
+	storage.state = change.Next.Clone()
+	return nil
+}
+
+type connectionUpdater struct{}
+
+func (*connectionUpdater) ValidateMCP(context.Context, []mcpclient.Config) error { return nil }
+
+type observedSettings struct {
+	settings.Settings
+	reads int
+}
+
+func (observer *observedSettings) Describe(ctx context.Context) (settings.Snapshot, error) {
+	observer.reads++
+	return observer.Settings.Describe(ctx)
+}
+
+func TestSettingsGatewayEditsDomainStateAndReportsApplication(t *testing.T) {
+	persona := "base persona"
+	storage := &storedSettings{}
+	business, err := settings.NewService(settings.Directory{
+		Values: settings.Values{
+			Prompts: map[string]settings.PromptConfig{
+				"default": {
+					Persona: &persona,
+				},
+			},
+			Providers: map[string]settings.ProviderConfig{"deepseek": {}},
 		},
-	}
-	gateway := api.NewGateway(describer)
-	methods := rpc.NewCatalog()
-	if err := api.Register(methods, gateway); err != nil {
-		t.Fatal(err)
-	}
-	result, err := methods.DispatchUnary(
-		context.Background(), api.DescribeMethod,
-		connection.RPCID("settings-present"), json.RawMessage(`{"ignored":true}`),
-	)
+	}, settings.State{}, storage, &connectionUpdater{}, &connectionUpdater{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var got api.DescribeValue
-	if err := json.Unmarshal(result.Value, &got); err != nil {
+	observer := &observedSettings{
+		Settings: business,
+	}
+	methods := rpc.NewCatalog()
+	if err := api.Register(methods, api.NewGateway(observer)); err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(got, describer.description) {
-		t.Fatalf("description = %#v, want %#v", got, describer.description)
+	call := func(method string, payload string) connection.RPCResult {
+		t.Helper()
+		result, err := methods.DispatchUnary(context.Background(), method, "settings-test", json.RawMessage(payload))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
 	}
-	describer.description.Namespaces[0].Secrets[0].Path[0] = "changed"
-	if got.Namespaces[0].Secrets[0].Path[0] != "apiKey" {
-		t.Fatal("wire Settings description aliases Provider state")
+	read := call(api.DescribeMethod, `{}`)
+	var description api.DescribeValue
+	if json.Unmarshal(read.Value, &description) != nil ||
+		!read.OK ||
+		!description.Writable ||
+		description.HasDocument ||
+		len(description.Namespaces) != 2 {
+		t.Fatalf("description = %#v", read)
+	}
+	for _, entry := range description.Namespaces {
+		if !json.Valid(entry.Schema) ||
+			len(entry.Secrets) != 0 {
+			t.Fatal("invalid or secret-bearing namespace projection")
+		}
+	}
+	readGroup := func(method string, payload string) api.NamespaceView {
+		t.Helper()
+		result := call(method, payload)
+		var view api.NamespaceView
+		if !result.OK || json.Unmarshal(result.Value, &view) != nil {
+			t.Fatalf("update = %#v", result)
+		}
+		return view
+	}
+	readGroup(api.UpdatePromptMethod, `{"name":"default","expectedRevision":0,"config":{"persona":"custom","includeHarnessIdentity":false}}`)
+	second := readGroup(api.UpdatePromptMethod, `{"name":"default","expectedRevision":1,"config":{"persona":"changed"}}`)
+	var overridden settings.PromptConfig
+	if json.Unmarshal(*second.User, &overridden) != nil ||
+		overridden.IncludeHarnessIdentity != nil {
+		t.Fatal("whole replacement inherited omitted field")
+	}
+	third := readGroup(api.ResetPromptMethod, `{"name":"default","expectedRevision":2}`)
+	var target settings.PromptConfig
+	if json.Unmarshal(third.Value, &target) != nil || *target.Persona != persona {
+		t.Fatal("explicit reset did not restore the local value")
+	}
+	fourth := readGroup(api.UpdatePromptMethod, `{"name":"default","expectedRevision":3,"config":{}}`)
+	if string(*fourth.User) != `{}` || fourth.Revision != 4 {
+		t.Fatal("whole group reset did not preserve revision or remove overrides")
+	}
+	conflict := call(api.UpdatePromptMethod, `{"name":"default","expectedRevision":0,"config":{"persona":"stale"}}`)
+	if conflict.Error == nil ||
+		conflict.Error.Code != connection.ErrorSettingsConflict ||
+		string(conflict.Error.Details) != `{"ns":"prompt","name":"default","expected":0,"actual":4}` {
+		t.Fatal("stale editor was not rejected")
+	}
+	secret := call(api.UpdateProviderMethod, `{"name":"deepseek","expectedRevision":0,"config":{"apiKey":"secret-marker"}}`)
+	if secret.Error == nil ||
+		secret.Error.Code != connection.ErrorBadRequest ||
+		strings.Contains(string(secret.Error.Details), "secret-marker") {
+		t.Fatal("secret path accepted")
+	}
+	storage.failure = settings.ErrStorage
+	failed := call(api.UpdatePromptMethod, `{"name":"default","expectedRevision":4,"config":{"persona":"not saved"}}`)
+	if failed.Error == nil ||
+		failed.Error.Code != connection.ErrorSettingsRejected ||
+		storage.state.Revision != 4 {
+		t.Fatal("failed persistence was reported as saved")
+	}
+	storage.failure = settings.ErrUncertain
+	uncertain := call(api.UpdatePromptMethod, `{"name":"default","expectedRevision":4,"config":{"persona":"uncertain"}}`)
+	if uncertain.Error == nil || !strings.Contains(uncertain.Error.Message, "reload settings") {
+		t.Fatalf("uncertain outcome: %#v", uncertain)
+	}
+	storage.failure = nil
+	saved := readGroup(api.UpdatePromptMethod, `{"name":"default","expectedRevision":4,"config":{"persona":"saved"}}`)
+	if saved.Revision != 5 || saved.Applies != api.ApplyAgentRestart {
+		t.Fatal("incorrect saved configuration scope")
+	}
+	if methods.HasUnary("settings.retryApplication") {
+		t.Fatal("obsolete application writer is still exposed")
+	}
+	if observer.reads != 1 {
+		t.Fatalf("updates or retry performed extra reads: %d", observer.reads)
+	}
+	if methods.HasUnary("settings.mutate") {
+		t.Fatal("obsolete mutation route is still registered")
+	}
+	provider := readGroup(api.UpdateProviderMethod, `{"name":"deepseek","expectedRevision":0,"config":{"apiKeyEnv":"CUSTOM_API_KEY"}}`)
+	if provider.NS != "llmprovider" || provider.Applies != api.ApplyRestart {
+		t.Fatalf("provider result = %#v", provider)
+	}
+	mcp := readGroup(api.UpdateMCPMethod, `{"name":"testa","expectedRevision":0,"config":{"enabled":true,"connection":{"serverName":"testa","transport":"streamable-http","url":"https://example.test"}}}`)
+	if mcp.NS != "mcp" ||
+		mcp.Name != "testa" ||
+		!strings.Contains(string(*mcp.User), `"enabled":true`) {
+		t.Fatalf("MCP result = %#v", mcp)
+	}
+	providerReset := readGroup(api.ResetProviderMethod, `{"name":"deepseek","expectedRevision":6}`)
+	if providerReset.User != nil || providerReset.NS != "llmprovider" {
+		t.Fatalf("provider reset: %#v", providerReset)
+	}
+	mcpReset := readGroup(api.ResetMCPMethod, `{"name":"testa","expectedRevision":7}`)
+	if mcpReset.User != nil ||
+		mcpReset.NS != "mcp" ||
+		mcpReset.Name != "testa" {
+		t.Fatalf("MCP reset: %#v", mcpReset)
+	}
+	invalid := call(api.UpdateProviderMethod, `{"name":"deepseek","expectedRevision":8,"config":{"streamIdleTimeoutMs":-1}}`)
+	if invalid.Error == nil || invalid.Error.Code != connection.ErrorSettingsRejected {
+		t.Fatalf("invalid domain configuration: %#v", invalid)
+	}
+	if observer.reads != 1 {
+		t.Fatalf("provider/MCP updates performed extra reads: %d", observer.reads)
+	}
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = methods.DispatchUnary(canceled, api.UpdatePromptMethod, "canceled", json.RawMessage(`{"name":"default","expectedRevision":5,"config":{}}`))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation: %v", err)
 	}
 }
 
-func TestSettingsGatewayRejectsInvalidProviderCatalog(t *testing.T) {
-	tests := []struct {
-		name      string
-		namespace api.NamespaceView
-	}{
-		{
-			name: "empty namespace",
-			namespace: api.NamespaceView{
-				Schema:  json.RawMessage(`{}`),
-				Value:   json.RawMessage(`{}`),
-				Applies: api.ApplyLive,
-			},
-		},
-		{
-			name: "invalid applies",
-			namespace: api.NamespaceView{
-				NS:      "bad",
-				Schema:  json.RawMessage(`{}`),
-				Value:   json.RawMessage(`{}`),
-				Applies: "later",
-			},
-		},
-		{
-			name: "invalid json",
-			namespace: api.NamespaceView{
-				NS:      "bad",
-				Schema:  json.RawMessage(`{`),
-				Value:   json.RawMessage(`{}`),
-				Applies: api.ApplyLive,
-			},
-		},
-		{
-			name: "negative revision",
-			namespace: api.NamespaceView{
-				NS:       "bad",
-				Schema:   json.RawMessage(`{}`),
-				Value:    json.RawMessage(`{}`),
-				Applies:  api.ApplyLive,
-				Revision: -1,
-			},
-		},
-	}
-	for _, testCase := range tests {
-		t.Run(testCase.name, func(t *testing.T) {
-			gateway := api.NewGateway(&settingsDescriberFixture{
-				description: api.DescribeValue{
-					Namespaces: []api.NamespaceView{testCase.namespace},
-				},
-			})
-			methods := rpc.NewCatalog()
-			if err := api.Register(methods, gateway); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := methods.DispatchUnary(
-				context.Background(), api.DescribeMethod,
-				connection.RPCID("settings-invalid"), json.RawMessage(`{}`),
-			); err == nil {
-				t.Fatal("invalid Settings Provider catalog was accepted")
-			}
-		})
-	}
-}
+func (*connectionUpdater) ValidateTool(context.Context, string) error { return nil }

@@ -1,18 +1,12 @@
 package registry
 
 import (
-	"context"
 	"errors"
 	"time"
 
-	middlewareactor "github.com/gorenx/goren/agent/middleware/actor"
-	"github.com/tochemey/goakt/v4/passivation"
-
-	runtimeactor "github.com/gorenx/goren/tools/runtime/actor"
-	"github.com/tochemey/goakt/v4/reentrancy"
-
 	"github.com/gorenx/goren/agent"
 	agentactor "github.com/gorenx/goren/agent/actor"
+	middlewareactor "github.com/gorenx/goren/agent/middleware/actor"
 	loopactor "github.com/gorenx/goren/agentloop/actor"
 	commandactor "github.com/gorenx/goren/commands/actor"
 	"github.com/gorenx/goren/llm"
@@ -20,6 +14,7 @@ import (
 	sessionactor "github.com/gorenx/goren/session/actor"
 	sessionregistry "github.com/gorenx/goren/session/registry"
 	promptactor "github.com/gorenx/goren/systemprompt/actor"
+	runtimeactor "github.com/gorenx/goren/tools/runtime/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
@@ -41,7 +36,9 @@ func newInstallation(
 	releases map[agent.Resource]releaser,
 ) *installation {
 	conversation := &sessionClient{
-		owner: input.SessionRegistry,
+		owner:  input.SessionRegistry,
+		role:   input.Role,
+		parent: input.Parent,
 		input: sessionregistry.RegisterSession{
 			SessionID:  input.Creation.AgentID,
 			CreationID: input.Creation.CreationID,
@@ -51,17 +48,19 @@ func newInstallation(
 		},
 	}
 	tools := &toolsClient{
-		input: runtimeactor.InitializeRuntime{
-			AgentID:    input.Creation.AgentID,
-			CreationID: input.Creation.CreationID,
-			Authority:  authority,
-			Registry:   input.ToolsRegistry,
-			Config:     input.Tools,
-			Timeout:    input.Timeout,
+		command: runtimeactor.InitializeRuntime{
+			Configuration: input.configuration,
+			AgentID:       input.Creation.AgentID,
+			CreationID:    input.Creation.CreationID,
+			Authority:     authority,
+			Registry:      input.ToolsRegistry,
+			Config:        input.Tools,
+			Timeout:       input.Timeout,
 		}}
 	prompt := &promptClient{
 		tools: tools,
 		input: promptactor.InitializeRuntime{
+			Config:         input.Prompt,
 			AgentID:        input.Creation.AgentID,
 			PromptRegistry: input.PromptRegistry,
 			CreationID:     input.Creation.CreationID,
@@ -111,6 +110,7 @@ func newInstallation(
 	}
 	for index, route := range input.Components {
 		endpoint := &capabilityClient{
+			role:         input.Role,
 			owner:        route,
 			creation:     input.Creation,
 			conversation: conversation,
@@ -132,7 +132,7 @@ func newInstallation(
 func installExecution(releases map[agent.Resource]releaser, endpoint *agentClient) {
 	releases[agent.Resource{Kind: agent.Work}] = &executionWait{endpoint: endpoint}
 	releases[agent.Resource{Kind: agent.Execution}] = &executionRelease{endpoint: endpoint}
-	releases[agent.Resource{Kind: agent.Activation}] = &activationRelease{endpoint: endpoint}
+	releases[agent.Resource{Kind: agent.AgentLoop}] = &agentLoopRelease{endpoint: endpoint}
 }
 
 func (installed *installation) commandRoute() *goakt.GrainIdentity {
@@ -156,6 +156,8 @@ func (installed *installation) capabilityRoutes() []Component {
 }
 
 type sessionClient struct {
+	role     agent.Role
+	parent   *Creation
 	owner    *goakt.GrainIdentity
 	input    sessionregistry.RegisterSession
 	identity *goakt.GrainIdentity
@@ -164,6 +166,10 @@ type sessionClient struct {
 func (endpoint *sessionClient) Runtime() *goakt.GrainIdentity { return endpoint.identity }
 
 func (endpoint *sessionClient) Initialize(gc *goakt.GrainContext, reply chan<- componentResult) {
+	if endpoint.parent != nil && !endpoint.input.Restore {
+		identifier := endpoint.parent.AgentID
+		endpoint.input.Options.Metadata.ParentSession = &identifier
+	}
 	requestComponent(gc, endpoint.owner, endpoint.input,
 		func(gc *goakt.GrainContext, registered sessionregistry.Completion, failure error) {
 			if failure != nil {
@@ -195,7 +201,15 @@ func (endpoint *sessionClient) Initialize(gc *goakt.GrainContext, reply chan<- c
 							goakt.WithLongLivedGrain(),
 						)
 					}
-					reply <- componentResult{err: failure}
+					if failure != nil {
+						reply <- componentResult{err: failure}
+						return
+					}
+					if (initialized.Header.ParentSession == nil) != (endpoint.parent == nil) || endpoint.parent != nil && *initialized.Header.ParentSession != endpoint.parent.AgentID {
+						reply <- componentResult{err: errors.New("agent registry: restored Session parent differs")}
+						return
+					}
+					endpoint.admitRole(gc, reply)
 				},
 			)
 		},
@@ -262,46 +276,36 @@ type modelClient struct {
 func (endpoint *modelClient) Runtime() *goakt.GrainIdentity { return endpoint.owner }
 
 func (endpoint *modelClient) Initialize(gc *goakt.GrainContext, reply chan<- componentResult) {
-	requestComponent(
-		gc, endpoint.owner,
-		llmactor.InitializeAgent{
+	if endpoint.options == nil {
+		requestComponent(gc, endpoint.owner, llmactor.InitializeAgent{
 			AgentID:    string(endpoint.creation.AgentID),
 			CreationID: endpoint.creation.CreationID,
 			Session:    endpoint.conversation.Runtime(),
+		}, func(_ *goakt.GrainContext, initialized llmactor.Completion, failure error) {
+			reply <- componentResult{err: errors.Join(failure, initialized.Err)}
+		})
+		return
+	}
+	// Explicit creation settings replace the previous lifetime's selection.
+	// Resolve omitted fields against deployment defaults, never Session history.
+	requestComponent(gc, endpoint.owner, llmactor.ResolveAgent{
+		Overrides: llm.CallConfig{
+			Provider:  endpoint.options.Provider,
+			Model:     endpoint.options.Model,
+			MaxTokens: endpoint.options.Clone().MaxTokens,
 		},
-		func(gc *goakt.GrainContext, initialized llmactor.Completion, failure error) {
-			failure = errors.Join(failure, initialized.Err)
-			if failure != nil || endpoint.options == nil {
-				reply <- componentResult{err: failure}
-				return
-			}
-			requestComponent(gc, endpoint.owner, llmactor.ReadConfiguration{
-				AgentID: string(endpoint.creation.AgentID),
-			}, func(gc *goakt.GrainContext, current llmactor.ConfigurationResult, requestErr error) {
-				failure := errors.Join(requestErr, current.Err)
-				if failure != nil {
-					reply <- componentResult{err: failure}
-					return
-				}
-				configuration := llm.CloneCallConfig(current.Config)
-				if endpoint.options.Provider != "" {
-					configuration.Provider = endpoint.options.Provider
-				}
-				if endpoint.options.Model != "" {
-					configuration.Model = endpoint.options.Model
-				}
-				if endpoint.options.MaxTokens != nil {
-					configuration.MaxTokens = endpoint.options.Clone().MaxTokens
-				}
-				requestComponent(gc, endpoint.owner, llmactor.SetConfiguration{
-					AgentID: string(endpoint.creation.AgentID),
-					Config:  configuration,
-				}, func(_ *goakt.GrainContext, configured llmactor.ConfigurationResult, setErr error) {
-					reply <- componentResult{err: errors.Join(setErr, configured.Err)}
-				})
-			})
-		},
-	)
+	}, func(gc *goakt.GrainContext, resolved llmactor.AgentConfiguration, failure error) {
+		if failure = errors.Join(failure, resolved.Err); failure != nil {
+			reply <- componentResult{err: failure}
+			return
+		}
+		requestComponent(gc, endpoint.owner, llmactor.SetConfiguration{
+			AgentID: string(endpoint.creation.AgentID),
+			Config:  resolved.Resolved.Config,
+		}, func(_ *goakt.GrainContext, configured llmactor.ConfigurationResult, failure error) {
+			reply <- componentResult{err: errors.Join(failure, configured.Err)}
+		})
+	})
 }
 
 type agentClient struct {
@@ -383,12 +387,12 @@ func (request *executionRelease) Close(gc *goakt.GrainContext, reply chan<- erro
 	)
 }
 
-// activationRelease stops the endpoint after Session has confirmed flush and close.
-type activationRelease struct {
+// agentLoopRelease stops the AgentLoop Grain after Session confirms flush and close.
+type agentLoopRelease struct {
 	endpoint *agentClient
 }
 
-func (request *activationRelease) Close(gc *goakt.GrainContext, reply chan<- error) {
+func (request *agentLoopRelease) Close(gc *goakt.GrainContext, reply chan<- error) {
 	deactivate(gc, request.endpoint.Runtime(), reply)
 }
 
@@ -438,6 +442,7 @@ func (endpoint *commandsClient) Close(gc *goakt.GrainContext, reply chan<- error
 }
 
 type capabilityClient struct {
+	role         agent.Role
 	owner        *goakt.GrainIdentity
 	creation     Creation
 	conversation *sessionClient
@@ -450,6 +455,7 @@ func (endpoint *capabilityClient) Initialize(gc *goakt.GrainContext, reply chan<
 	requestComponent(
 		gc, endpoint.owner,
 		agentactor.StartComponent{
+			Role:       endpoint.role,
 			AgentID:    endpoint.creation.AgentID,
 			CreationID: endpoint.creation.CreationID,
 			Agent:      endpoint.executor.Runtime(),
@@ -473,6 +479,7 @@ func (endpoint *capabilityClient) Close(gc *goakt.GrainContext, reply chan<- err
 		gc,
 		endpoint.owner,
 		agentactor.StopComponent{
+			Role:       endpoint.role,
 			AgentID:    endpoint.creation.AgentID,
 			CreationID: endpoint.creation.CreationID,
 		},
@@ -496,87 +503,27 @@ func (endpoint *childClient) Close(gc *goakt.GrainContext, reply chan<- error) {
 	)
 }
 
-type toolsClient struct {
-	// watcher belongs to this Tools resource and stops before Runtime deactivation.
-	watcher *goakt.PID
-	input   runtimeactor.InitializeRuntime
-	release runtimeRelease
-	// instanceID is fixed before authorization; Close never certifies a reactivated runtime.
-	instanceID string
-}
-
-func (endpoint *toolsClient) Runtime() *goakt.GrainIdentity { return endpoint.release.identity }
-
-func (endpoint *toolsClient) Initialize(gc *goakt.GrainContext, reply chan<- componentResult) {
-	identity, err := goakt.GrainOf[*runtimeactor.Runtime](
-		gc.Context(),
-		gc.ActorSystem(),
-		runtimeactor.RuntimeName(string(endpoint.input.AgentID)),
-		goakt.WithLongLivedGrain(),
-		goakt.WithGrainReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))),
-	)
-	endpoint.release.identity = identity
-	if err != nil {
-		reply <- componentResult{err: err}
-		return
-	}
-	requestComponent(
-		gc,
-		identity,
-		endpoint.input,
-		func(gc *goakt.GrainContext, initialized runtimeactor.Completion, failure error) {
-			failure = errors.Join(failure, initialized.Err)
-			if failure == nil {
-				endpoint.watcher, failure = gc.ActorSystem().Spawn(
-					gc.Context(),
-					string(endpoint.input.AgentID)+".tools.configuration",
-					&runtimeactor.Watcher{
-						AgentID:    string(endpoint.input.AgentID),
-						CreationID: endpoint.input.CreationID,
-						Target:     endpoint.Runtime(),
-					},
-					goakt.WithReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))),
-					goakt.WithPassivationStrategy(passivation.NewLongLivedStrategy()),
-				)
-			}
-			reply <- componentResult{err: failure}
-		})
-}
-
-func (endpoint *toolsClient) Close(gc *goakt.GrainContext, reply chan<- error) {
-	if endpoint.watcher == nil {
-		endpoint.closeRuntime(gc, reply)
-		return
-	}
-	watcher := endpoint.watcher
-	ctx := context.WithoutCancel(gc.Context())
-	err := gc.PipeToSelf(func() (any, error) {
-		return clientReply[struct{}]{
-			err: watcher.Shutdown(ctx),
-			receive: func(gc *goakt.GrainContext, _ struct{}, failure error) {
-				if failure != nil {
-					reply <- failure
-					return
-				}
-				endpoint.watcher = nil
-				endpoint.closeRuntime(gc, reply)
-			},
-		}, nil
-	})
-	if err != nil {
-		reply <- err
-	}
-}
-
-func (endpoint *toolsClient) closeRuntime(gc *goakt.GrainContext, reply chan<- error) {
-	if endpoint.instanceID == "" {
-		// No activation was ever authorized to acquire resources. Closing admission
-		// prevents any delayed claim from succeeding, so framework stop suffices.
-		deactivate(gc, endpoint.release.identity, reply)
-		return
-	}
-	closeRuntime(gc, &endpoint.release, runtimeactor.CloseRuntime{
+func (endpoint *sessionClient) admitRole(gc *goakt.GrainContext, reply chan<- componentResult) {
+	requestComponent(gc, endpoint.identity, sessionactor.Commit{
 		CreationID: endpoint.input.CreationID,
-		InstanceID: endpoint.instanceID,
-	}, func(result runtimeactor.Completion) error { return result.Err }, reply)
+		Plan: agent.RoleAdmission{
+			SessionID: endpoint.input.SessionID,
+			Expected:  endpoint.role,
+			Restore:   endpoint.input.Restore,
+		},
+	}, func(gc *goakt.GrainContext, committed sessionactor.Committed, failure error) {
+		if failure == nil {
+			failure = committed.Err
+		}
+		if failure != nil {
+			reply <- componentResult{err: failure}
+			return
+		}
+		requestComponent(gc, endpoint.identity, sessionactor.Flush{
+			CreationID: endpoint.input.CreationID,
+			Barrier:    committed.Result.Barrier,
+		}, func(_ *goakt.GrainContext, flushed sessionactor.Flushed, failure error) {
+			reply <- componentResult{err: errors.Join(failure, flushed.Err)}
+		})
+	})
 }

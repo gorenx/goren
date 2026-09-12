@@ -68,3 +68,45 @@ func TestChildUsesSnapshotUntilExplicitBaseUpdate(t *testing.T) {
 		t.Fatal("base update rewrote an existing request")
 	}
 }
+
+func TestSnapshotConfigurationRetainsRegisteredDefinitions(t *testing.T) {
+	root := newPrompts(t, systemprompt.Config{
+		Persona: "original persona",
+	})
+	registration, err := root.AddSection(t.Context(), systemprompt.PromptSection{
+		Name: "extension",
+		Text: systemprompt.StaticText("extension text"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := systemprompt.DeriveLayer(root.Capture())
+	if _, err := child.AddSection(t.Context(), systemprompt.PromptSection{
+		Name: "report",
+		Text: systemprompt.StaticText("report to parent"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before := child.Capture()
+	selected, err := before.WithConfiguration(systemprompt.Config{
+		Persona: "selected persona",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered := renderSnapshot(t, selected)
+	for _, textValue := range []string{"selected persona", "extension text", "report to parent"} {
+		if !strings.Contains(rendered, textValue) {
+			t.Fatalf("missing %q in %s", textValue, rendered)
+		}
+	}
+	if strings.Contains(rendered, "original persona") || !strings.Contains(renderSnapshot(t, before), "original persona") {
+		t.Fatal("configuration selection did not isolate snapshots")
+	}
+	if removed, err := root.Remove(t.Context(), registration); err != nil || !removed {
+		t.Fatalf("extension ownership changed: %v, %v", removed, err)
+	}
+	if !strings.Contains(renderSnapshot(t, selected), "extension text") {
+		t.Fatal("live removal changed the selected snapshot")
+	}
+}

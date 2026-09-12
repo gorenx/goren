@@ -12,6 +12,11 @@ import (
 )
 
 // AppendedEventName is the canonical topic for committed Session notifications.
+// It is a notification topic, not an Event.Type stored in the log. For example,
+// committing an Event whose Type is "request/header" causes the Session actor
+// to publish a CommitNotice on "session/event" carrying that same event.
+// Publication follows the in-memory commit; it does not acknowledge a flush
+// or completion of the asynchronous subscribers' work.
 const AppendedEventName = "session/event"
 
 // EndSeedEventName separates inherited history from events produced by the

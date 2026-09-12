@@ -27,13 +27,6 @@ func TestMergeInheritsSchemaAndOverridesIndividualPolicyFields(t *testing.T) {
 			},
 		},
 		Custom: toolregistry.Catalog{
-			Schemas: []llm.ToolSchema{
-				{
-					Name:        "read",
-					Description: "custom read",
-					Parameters:  []byte(`{"type":"object"}`),
-				},
-			},
 			Policies: map[string]toolregistry.Policy{
 				"read":  {Visible: &visible},
 				"write": {Enabled: &disabled},
@@ -41,15 +34,15 @@ func TestMergeInheritsSchemaAndOverridesIndividualPolicyFields(t *testing.T) {
 		},
 	}
 	merged, err := Merge(input)
-	if err != nil || len(merged) != 1 || !merged[0].Visible || merged[0].Schema.Description != "custom read" {
+	if err != nil || len(merged) != 1 || !merged[0].Visible || merged[0].Schema.Description != "read" {
 		t.Fatalf("merge=%+v error=%v", merged, err)
 	}
 	merged[0].Schema.Parameters[0] = '!'
-	if input.Custom.Schemas[0].Parameters[0] != '{' {
+	if input.Global.Schemas[0].Parameters[0] != '{' {
 		t.Fatal("merged schema aliases Registry input")
 	}
 	if input.Global.Schemas[0].Description != "read" {
-		t.Fatal("custom schema mutated global schema")
+		t.Fatal("merge mutated global schema")
 	}
 }
 
@@ -121,6 +114,37 @@ func TestMergeAppliesSessionToolRestriction(t *testing.T) {
 			slices.Sort(want)
 			if !slices.Equal(got, want) {
 				t.Fatalf("tools = %v, want %v", got, testCase.want)
+			}
+		})
+	}
+}
+
+func TestMergeRejectsDuplicateSchemasBeforeFiltering(t *testing.T) {
+	for _, placement := range []string{"global", "session", "cross-catalog"} {
+		t.Run(placement, func(t *testing.T) {
+			input := toolregistry.Configuration{
+				Custom: toolregistry.Catalog{
+					Restriction: &toolregistry.ToolRestriction{
+						Deny: []string{"read"},
+					},
+					Policies: map[string]toolregistry.Policy{
+						"read": {
+							Enabled: new(false),
+						},
+					},
+				},
+			}
+			switch placement {
+			case "global":
+				input.Global.Schemas = []llm.ToolSchema{testSchema("read"), changedReadSchema()}
+			case "session":
+				input.Custom.Schemas = []llm.ToolSchema{testSchema("read"), changedReadSchema()}
+			case "cross-catalog":
+				input.Global.Schemas = []llm.ToolSchema{testSchema("read")}
+				input.Custom.Schemas = []llm.ToolSchema{changedReadSchema()}
+			}
+			if _, err := Merge(input); err == nil {
+				t.Fatal("filtering or disabling concealed duplicate tool schemas")
 			}
 		})
 	}

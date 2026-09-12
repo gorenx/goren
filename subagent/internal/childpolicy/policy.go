@@ -13,11 +13,8 @@ import (
 	toolregistry "github.com/gorenx/goren/tools/registry"
 )
 
-const boundSystemPromptSection = "subagent:bound"
-
 type PolicySet struct {
 	Persona         *string
-	SystemPrompt    *string
 	ToolRestriction *toolregistry.ToolRestriction
 }
 
@@ -28,14 +25,6 @@ func Apply(selected PolicySet, configuration *subagent.ChildConfiguration) {
 			Name:     systemprompt.PersonaSection,
 			Order:    systemprompt.PersonaOrder,
 			Text:     systemprompt.StaticText(*selected.Persona),
-			Complete: true,
-		})
-	}
-	if selected.SystemPrompt != nil {
-		configuration.PromptSections = append(configuration.PromptSections, systemprompt.PromptSection{
-			Name:     boundSystemPromptSection,
-			Order:    systemprompt.PersonaOrder,
-			Text:     systemprompt.StaticText(*selected.SystemPrompt),
 			Complete: true,
 		})
 	}

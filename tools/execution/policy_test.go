@@ -53,7 +53,7 @@ func TestPolicyExecutionViewCannotChangePreparedCall(t *testing.T) {
 	}
 	state := newToolsFixture(t, observer)
 	bodyCalls := 0
-	coordinator := testScheduler(t, state.policies, objectTool("read", "", executorStub(func(arguments json.RawMessage, _ tools.ToolRunContext) (json.RawMessage, error) {
+	coordinator := testScheduler(t, objectTool("read", "", executorStub(func(arguments json.RawMessage, _ tools.ToolRunContext) (json.RawMessage, error) {
 		bodyCalls++
 		return arguments, nil
 	})))
@@ -63,7 +63,8 @@ func TestPolicyExecutionViewCannotChangePreparedCall(t *testing.T) {
 		CallID:    "read-1",
 		Name:      "read",
 		Arguments: json.RawMessage(`{}`),
-	})
+	}, state.policies,
+	)
 	if err != nil || prepared.Stage != tools.ScheduledDispatch {
 		t.Fatalf("preparation = %#v, %v", prepared, err)
 	}
@@ -73,11 +74,17 @@ func TestPolicyExecutionViewCannotChangePreparedCall(t *testing.T) {
 	// Policy data has no state field and cannot be passed to Dispatch: its type
 	// differs from the package-private scheduling handle.
 	captured.Name = "changed-by-policy"
-	dispatched, err := scheduler.dispatch(prepared.Execution)
+	dispatched, err := (&Call{
+		scheduler:   scheduler,
+		preparation: prepared,
+	}).dispatchBody()
 	if err != nil || bodyCalls != 1 {
 		t.Fatalf("original handle dispatch: calls = %d, err = %v", bodyCalls, err)
 	}
-	final, err := scheduler.finalize(prepared.Execution, dispatched.Result)
+	final, err := (&Call{
+		scheduler:   scheduler,
+		preparation: prepared,
+	}).finalize(dispatched.Result)
 	if err != nil || final.Failed() {
 		t.Fatalf("original handle finalization = %#v, %v", final, err)
 	}
@@ -86,7 +93,7 @@ func TestPolicyExecutionViewCannotChangePreparedCall(t *testing.T) {
 func TestAskDecisionWaitsForAuditedOutcomeBeforeDispatch(t *testing.T) {
 	state := newToolsFixture(t, askPolicy("needs permission"))
 	bodyCalls := 0
-	coordinator := testScheduler(t, state.policies, objectTool("danger", "", executorStub(func(arguments json.RawMessage, _ tools.ToolRunContext) (json.RawMessage, error) {
+	coordinator := testScheduler(t, objectTool("danger", "", executorStub(func(arguments json.RawMessage, _ tools.ToolRunContext) (json.RawMessage, error) {
 		bodyCalls++
 		return arguments, nil
 	})))
@@ -96,14 +103,18 @@ func TestAskDecisionWaitsForAuditedOutcomeBeforeDispatch(t *testing.T) {
 		CallID:    "danger-1",
 		Name:      "danger",
 		Arguments: json.RawMessage(`{}`),
-	})
+	}, state.policies,
+	)
 	if err != nil || prepared.Stage != tools.ScheduledApproval || prepared.Approval == nil {
 		t.Fatalf("preparation = %#v, %v", prepared, err)
 	}
 	if prepared.Execution.SessionID != "session" || prepared.Approval.Reason != "needs permission" || bodyCalls != 0 {
 		t.Fatal("invalid approval request or early dispatch")
 	}
-	if _, err := scheduler.dispatch(prepared.Execution); err == nil {
+	if _, err := (&Call{
+		scheduler:   scheduler,
+		preparation: prepared,
+	}).dispatchBody(); err == nil {
 		t.Fatal("dispatch bypassed approval")
 	}
 	allowed, err := scheduler.applyApproval(prepared.Execution, approval.OutcomeAllowedOnce)
@@ -113,11 +124,17 @@ func TestAskDecisionWaitsForAuditedOutcomeBeforeDispatch(t *testing.T) {
 	if _, err := scheduler.applyApproval(prepared.Execution, approval.OutcomeAllowedOnce); err == nil {
 		t.Fatal("duplicate outcome accepted")
 	}
-	dispatched, err := scheduler.dispatch(allowed.Execution)
+	dispatched, err := (&Call{
+		scheduler:   scheduler,
+		preparation: allowed,
+	}).dispatchBody()
 	if err != nil || bodyCalls != 1 {
 		t.Fatalf("dispatch calls = %d, err = %v", bodyCalls, err)
 	}
-	result, err := scheduler.finalize(allowed.Execution, dispatched.Result)
+	result, err := (&Call{
+		scheduler:   scheduler,
+		preparation: allowed,
+	}).finalize(dispatched.Result)
 	if err != nil || result.Failed() {
 		t.Fatalf("result = %#v, %v", result, err)
 	}
@@ -126,7 +143,7 @@ func TestAskDecisionWaitsForAuditedOutcomeBeforeDispatch(t *testing.T) {
 func TestAskDecisionFailsClosedWithoutApproval(t *testing.T) {
 	state := newToolsFixture(t, askPolicy("needs permission"))
 	bodyCalls := 0
-	coordinator := testScheduler(t, state.policies, objectTool(
+	coordinator := testScheduler(t, objectTool(
 		"danger",
 		"",
 		executorStub(func(
@@ -143,7 +160,7 @@ func TestAskDecisionFailsClosedWithoutApproval(t *testing.T) {
 			CallID:    "danger-1",
 			Name:      "danger",
 			Arguments: json.RawMessage(`{}`),
-		},
+		}, state.policies,
 	)
 	if !outcome.Failed() || bodyCalls != 0 ||
 		!strings.Contains(resultText(t, outcome), "no approval channel") {
@@ -200,7 +217,7 @@ func TestPostPolicyCanReplaceValueOrBlock(t *testing.T) {
 				}),
 			}
 			state := newToolsFixture(t, policy)
-			coordinator := testScheduler(t, state.policies, objectTool(
+			coordinator := testScheduler(t, objectTool(
 				"normalized",
 				"",
 				executorStub(passThroughBody),
@@ -211,7 +228,7 @@ func TestPostPolicyCanReplaceValueOrBlock(t *testing.T) {
 					CallID:    "post-1",
 					Name:      "normalized",
 					Arguments: json.RawMessage(`{"original":true}`),
-				},
+				}, state.policies,
 			)
 			if outcome.Failed() != testCase.wantFailed ||
 				resultText(t, outcome) != testCase.wantContent {
@@ -246,7 +263,7 @@ func TestPostValueReplacementPreservesTurnConclusion(t *testing.T) {
 		}),
 	}
 	state := newToolsFixture(t, policy)
-	coordinator := testScheduler(t, state.policies, objectTool(
+	coordinator := testScheduler(t, objectTool(
 		"concluding",
 		"",
 		executorStub(func(
@@ -263,7 +280,7 @@ func TestPostValueReplacementPreservesTurnConclusion(t *testing.T) {
 			CallID:    "concluding-1",
 			Name:      "concluding",
 			Arguments: json.RawMessage(`{"original":true}`),
-		},
+		}, state.policies,
 	)
 	succeeded, matches := outcome.(*tools.ToolExecutionSuccess)
 	if !matches || !succeeded.ConcludesTurn ||
@@ -284,7 +301,7 @@ func TestBestEffortResultFailureDoesNotReplaceToolOutcome(t *testing.T) {
 		},
 	}
 	state := newToolsFixture(t, observer)
-	coordinator := testScheduler(t, state.policies, objectTool(
+	coordinator := testScheduler(t, objectTool(
 		"observed",
 		"",
 		executorStub(passThroughBody),
@@ -295,7 +312,7 @@ func TestBestEffortResultFailureDoesNotReplaceToolOutcome(t *testing.T) {
 			CallID:    "observed-1",
 			Name:      "observed",
 			Arguments: json.RawMessage(`{}`),
-		},
+		}, state.policies,
 	)
 	if outcome.Failed() {
 		t.Fatalf("observer replaced Tool outcome = %#v", outcome)
@@ -336,7 +353,7 @@ func TestApprovalRejectionAndCancellationNeverDispatch(t *testing.T) {
 		t.Run(scenario.name, func(t *testing.T) {
 			state := newToolsFixture(t, askPolicy("permission"))
 			calls := 0
-			coordinator := testScheduler(t, state.policies, objectTool("danger", "", executorStub(func(raw json.RawMessage, _ tools.ToolRunContext) (json.RawMessage, error) {
+			coordinator := testScheduler(t, objectTool("danger", "", executorStub(func(raw json.RawMessage, _ tools.ToolRunContext) (json.RawMessage, error) {
 				calls++
 				return raw, nil
 			})))
@@ -348,7 +365,8 @@ func TestApprovalRejectionAndCancellationNeverDispatch(t *testing.T) {
 				CallID:    "call",
 				Name:      "danger",
 				Arguments: json.RawMessage(`{}`),
-			})
+			}, state.policies,
+			)
 			if err != nil || prepared.Stage != tools.ScheduledApproval {
 				t.Fatalf("prepare = %#v, %v", prepared, err)
 			}
@@ -359,10 +377,16 @@ func TestApprovalRejectionAndCancellationNeverDispatch(t *testing.T) {
 			if err != nil || resumed.Stage != tools.ScheduledPostResult {
 				t.Fatalf("resume = %#v, %v", resumed, err)
 			}
-			if _, err := scheduler.dispatch(resumed.Execution); err == nil {
+			if _, err := (&Call{
+				scheduler:   scheduler,
+				preparation: resumed,
+			}).dispatchBody(); err == nil {
 				t.Fatal("denied execution dispatched")
 			}
-			result, err := scheduler.finalize(resumed.Execution, resumed.Result)
+			result, err := (&Call{
+				scheduler:   scheduler,
+				preparation: resumed,
+			}).finalize(resumed.Result)
 			if err != nil || !result.Failed() || calls != 0 {
 				t.Fatalf("result = %#v, calls = %d, err = %v", result, calls, err)
 			}

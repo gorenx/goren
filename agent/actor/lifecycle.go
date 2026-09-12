@@ -30,10 +30,13 @@ type Initialized struct {
 	Err error
 }
 
-// PrepareClose stops new input admission and checks whether accepted work has finished.
+// PrepareClose stops new input admission and waits for active work to settle.
 // A non-nil Prepared.Err means resources must remain available for completion.
 type PrepareClose struct {
 	CreationID string
+	// FinishCurrent allows active work to complete without requesting cancellation.
+	// Queued work remains in the Session for restoration. False cancels active work.
+	FinishCurrent bool
 }
 
 // Prepared reports whether accepted work has finished, not resource shutdown.

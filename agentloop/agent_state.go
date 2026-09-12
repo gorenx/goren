@@ -30,6 +30,11 @@ func (subject *ReactLoopAgent) Cancellation() error {
 // acceptExecution applies only a committed admission. An old preserved Inbox
 // alone cannot request replay; a newly admitted wake can.
 func (subject *ReactLoopAgent) acceptExecution(wake bool) {
+	// A previously admitted commit may arrive after close admission was frozen.
+	// Preserve its durable input without waking another execution.
+	if subject.lifetime != available {
+		return
+	}
 	subject.preserveInbox = false
 	if !wake {
 		return

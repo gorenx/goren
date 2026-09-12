@@ -4,17 +4,17 @@ import (
 	"context"
 	"errors"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/gorenx/goren/tools"
 	catalogactor "github.com/gorenx/goren/tools/registry/actor"
+	"github.com/gorenx/goren/tools/tool"
 	toolactor "github.com/gorenx/goren/tools/tool/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
 
-// These messages belong to the Runtime's Instances adapter, not Agent Registry.
+// These messages belong to the Runtime's ToolActor client, not Agent Registry.
 type createTool struct {
 	CreationID string
 	Name       string
@@ -81,7 +81,7 @@ func (owner *Runtime) receiveTools(gc *goakt.GrainContext) bool {
 			gc.Response(toolInstance{Err: errors.New("tools: wrong Runtime creation")})
 			return true
 		}
-		instance := owner.tools[input.Name]
+		instance := owner.actors[input.Name]
 		if instance == nil {
 			gc.Response(toolInstance{})
 			return true
@@ -92,11 +92,11 @@ func (owner *Runtime) receiveTools(gc *goakt.GrainContext) bool {
 			Ready:      instance.phase == toolInitialized,
 		})
 	case removeTool:
-		if input.CreationID != owner.creationID || owner.active == nil {
+		if input.CreationID != owner.creationID || owner.request == nil {
 			gc.Response(Completion{Err: errors.New("tools: removal requires the current Runtime operation")})
 			return true
 		}
-		instance := owner.tools[input.Name]
+		instance := owner.actors[input.Name]
 		if instance == nil {
 			gc.Response(Completion{})
 			return true
@@ -106,7 +106,7 @@ func (owner *Runtime) receiveTools(gc *goakt.GrainContext) bool {
 		gc.Response(toolactor.Completion{Err: owner.claimTool(input)})
 	case toolLifecycleResult:
 		gc.NoErr()
-		if owner.tools[input.name] != input.instance || input.instance.active != input.request {
+		if owner.actors[input.name] != input.instance || input.instance.active != input.request {
 			return true
 		}
 		input.request.cancel()
@@ -115,7 +115,7 @@ func (owner *Runtime) receiveTools(gc *goakt.GrainContext) bool {
 		input.instance.phase = input.phase
 		if input.request.remove {
 			if input.err == nil {
-				delete(owner.tools, input.name)
+				delete(owner.actors, input.name)
 			}
 			input.request.reply.Response(Completion{Err: input.err})
 		} else {
@@ -134,7 +134,7 @@ func (owner *Runtime) receiveTools(gc *goakt.GrainContext) bool {
 
 func (owner *Runtime) createTool(gc *goakt.GrainContext, input createTool) {
 	if input.CreationID != owner.creationID ||
-		owner.active == nil ||
+		owner.request == nil ||
 		input.Name == "" ||
 		strings.TrimSpace(input.Name) != input.Name ||
 		input.Name == tools.RunCodeName ||
@@ -142,13 +142,13 @@ func (owner *Runtime) createTool(gc *goakt.GrainContext, input createTool) {
 		gc.Response(toolInstance{Err: errors.New("tools: valid tool name and current Runtime operation are required")})
 		return
 	}
-	instance := owner.tools[input.Name]
+	instance := owner.actors[input.Name]
 	if instance == nil {
 		instance = &toolLifecycle{creationID: uuid.NewString()}
-		if owner.tools == nil {
-			owner.tools = make(map[string]*toolLifecycle)
+		if owner.actors == nil {
+			owner.actors = make(map[string]*toolLifecycle)
 		}
-		owner.tools[input.Name] = instance
+		owner.actors[input.Name] = instance
 	}
 	if instance.phase >= toolClosing {
 		gc.Response(toolInstance{Err: errors.New("tools: tool lifetime is closing")})
@@ -166,8 +166,9 @@ func (owner *Runtime) createTool(gc *goakt.GrainContext, input createTool) {
 }
 
 func (owner *Runtime) claimTool(input toolactor.Claim) error {
-	instance := owner.tools[input.Name]
-	if input.AgentID != owner.agentID ||
+	instance := owner.actors[input.Name]
+	if input.AgentCreationID != owner.creationID ||
+		input.AgentID != owner.agentID ||
 		instance == nil ||
 		instance.creationID != input.CreationID ||
 		instance.phase >= toolClosing ||
@@ -215,11 +216,51 @@ func (owner *Runtime) scheduleTool(gc *goakt.GrainContext, name string, instance
 		phase:    phase,
 	}
 	creationID := instance.creationID
+	agentCreationID := owner.creationID
 	agentID := owner.agentID
 	authority := gc.Self()
 	system := gc.ActorSystem()
-	directory := owner.catalog.target
-	timeout := owner.instances.timeout
+	directory := owner.registry
+	timeout := owner.replyTimeout
+	var providers tool.ProviderSource
+	if owner.connections != nil {
+		providers = owner.connections
+	}
+	confirmed := make(chan error, 1)
+	if !removing && result.identity == nil {
+		address, err := goakt.GrainOf[*toolactor.Grain](
+			ctx,
+			system,
+			toolactor.RuntimeName(string(agentID), name),
+			goakt.WithLongLivedGrain(),
+			goakt.WithGrainReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))),
+		)
+		if err != nil {
+			cancel()
+			instance.active = nil
+			reply.Response(toolInstance{Err: err})
+			return
+		}
+		instance.identity = address
+		result.identity = address
+	}
+	target := result.identity
+	var command any
+	if !removing {
+		command = toolactor.Initialize{
+			AgentCreationID: agentCreationID,
+			CreationID:      creationID,
+			AgentID:         agentID,
+			Name:            name,
+			Authority:       authority,
+			Providers:       providers,
+		}
+	} else if phase == toolInitialized || phase == toolClosing {
+		command = toolactor.Close{
+			CreationID: creationID,
+			Context:    ctx,
+		}
+	}
 	err := gc.PipeToSelf(func() (any, error) {
 		// Only detached transport values cross into this task. Lifecycle records
 		// remain mailbox-owned, including claims received during Initialize.
@@ -229,10 +270,7 @@ func (owner *Runtime) scheduleTool(gc *goakt.GrainContext, name string, instance
 			}
 			if result.phase == toolInitialized || result.phase == toolClosing {
 				result.phase = toolClosing
-				result.err = requestTool(ctx, system, result.identity, toolactor.Close{
-					CreationID: creationID,
-					Context:    ctx,
-				}, timeout)
+				result.err = <-confirmed
 				if result.err != nil {
 					return result, nil
 				}
@@ -259,19 +297,7 @@ func (owner *Runtime) scheduleTool(gc *goakt.GrainContext, name string, instance
 			}
 			return result, nil
 		}
-		if result.identity == nil {
-			result.identity, result.err = goakt.GrainOf[*toolactor.Grain](ctx, system, toolactor.RuntimeName(string(agentID), name),
-				goakt.WithLongLivedGrain(), goakt.WithGrainReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))))
-			if result.err != nil {
-				return result, nil
-			}
-		}
-		result.err = requestTool(ctx, system, result.identity, toolactor.Initialize{
-			CreationID: creationID,
-			AgentID:    agentID,
-			Name:       name,
-			Authority:  authority,
-		}, timeout)
+		result.err = <-confirmed
 		if result.err != nil {
 			return result, nil
 		}
@@ -304,16 +330,30 @@ func (owner *Runtime) scheduleTool(gc *goakt.GrainContext, name string, instance
 			reply.Response(toolInstance{Err: err})
 		}
 	}
+	if err == nil && command != nil {
+		gc.RequestGrain(target, command,
+			goakt.WithRequestTimeout(timeout),
+			goakt.WithReentrancyMode(reentrancy.AllowAll),
+		).Then(func(payload any, failure error) {
+			if failure == nil {
+				acknowledged, valid := payload.(toolactor.Completion)
+				if !valid {
+					failure = errors.New("tools: invalid tool lifecycle reply")
+				} else {
+					failure = acknowledged.Err
+				}
+			}
+			confirmed <- failure
+		})
+	}
 }
 
-func requestTool(ctx context.Context, system goakt.ActorSystem, target *goakt.GrainIdentity, message any, timeout time.Duration) error {
-	payload, err := system.AskGrain(ctx, target, message, timeout)
-	if err != nil {
-		return err
+func (owner *Runtime) newToolClient(gc *goakt.GrainContext) *toolClient {
+	return &toolClient{
+		system:     gc.ActorSystem(),
+		runtime:    gc.Self(),
+		agentID:    owner.agentID,
+		creationID: owner.creationID,
+		timeout:    owner.replyTimeout,
 	}
-	result, valid := payload.(toolactor.Completion)
-	if !valid {
-		return errors.New("tools: invalid tool lifecycle reply")
-	}
-	return result.Err
 }

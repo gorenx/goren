@@ -7,13 +7,16 @@ import (
 
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/session"
+	"github.com/gorenx/goren/settings"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
 // activation retains startup input, temporary data and orchestration progress.
 // Component ownership lives separately in installation. The first input is frozen.
 type activation struct {
-	input     CreateAgent
+	input CreateAgent
+	// values records the Settings snapshot used to create this lifetime.
+	values    *settings.Values
 	component agent.Component
 	replies   []*goakt.GrainReply
 	cancel    context.CancelFunc
@@ -46,10 +49,18 @@ func (owner *Grain) createChildAgent(gc *goakt.GrainContext, input CreateChildAg
 		return
 	}
 	derived := parent.activation.input.clone()
+	derived.Manager = input.Manager
+	derived.Role = input.Role
 	derived.Creation = input.Child
 	derived.Parent = &input.Parent
 	derived.Restore = input.Restore
 	derived.Options = input.Options.Clone()
+	derived.ConfigurationName = input.ConfigName
+	if input.ConfigName == "" {
+		// Children without a named Settings selection retain their existing
+		// configuration mechanism instead of implicitly following process defaults.
+		derived.Settings = nil
+	}
 	if input.AgentOptions != nil {
 		captured := input.AgentOptions.Clone()
 		derived.AgentOptions = &captured
@@ -60,7 +71,15 @@ func (owner *Grain) createChildAgent(gc *goakt.GrainContext, input CreateChildAg
 		catalog := input.Tools.Clone()
 		derived.Tools = &catalog
 	}
+	derived.Prompt = nil
+	if input.Prompt != nil {
+		captured := input.Prompt.Clone()
+		derived.Prompt = &captured
+	}
 	derived.PromptSections = slices.Clone(input.PromptSections)
+	if input.Components != nil {
+		derived.Components = slices.Clone(input.Components)
+	}
 	owner.createAgent(gc, derived)
 }
 
@@ -79,6 +98,7 @@ func (owner *Grain) createAgent(gc *goakt.GrainContext, input CreateAgent) {
 		return
 	}
 	err = owner.reserveAgent(ReserveAgent{
+		Role:     input.Role,
 		Creation: input.Creation,
 		Parent:   input.Parent,
 	})
@@ -102,7 +122,13 @@ func (owner *Grain) createAgent(gc *goakt.GrainContext, input CreateAgent) {
 	}
 	entry := owner.creations[input.Creation.AgentID]
 	entry.activation = operation
-	entry.services = newInstallation(gc.Self(), operation.input, entry.releases)
+	owner.creations[input.Creation.AgentID] = entry
+	owner.prepareCreation(gc, operation)
+}
+
+func (owner *Grain) installCreation(gc *goakt.GrainContext, operation *activation, input CreateAgent) {
+	entry := owner.creations[input.Creation.AgentID]
+	entry.services = newInstallation(gc.Self(), input, entry.releases)
 	owner.creations[input.Creation.AgentID] = entry
 	owner.runCreation(gc, operation)
 }
@@ -194,6 +220,9 @@ func (owner *Grain) finishCreation(gc *goakt.GrainContext, operation *activation
 		reply.Response(result)
 	}
 	operation.replies = nil
+	if failure == nil {
+		owner.restartChanged(gc)
+	}
 	entry := owner.creations[operation.input.Creation.AgentID]
 	state, _ := owner.directory.State(identifier)
 	if state == agent.Closing {

@@ -10,6 +10,15 @@ import (
 
 const reportPrompt = "Deliver your result with the report tool before you finish: call it once with a self-contained answer. The agent that started you does not automatically receive your transcript, tool output, or reasoning. Report earlier as well whenever a partial finding changes what that agent should do next; reporting never ends your turn."
 
+// Section supplies the reporting instructions to ordinary Agent prompt assembly.
+func Section() systemprompt.PromptSection {
+	return systemprompt.PromptSection{
+		Name:  "tool:report",
+		Order: 117,
+		Text:  systemprompt.StaticText(reportPrompt),
+	}
+}
+
 // extension contributes the report prompt and Tool to one child Agent Scope.
 type extension struct {
 	tool *reportTool
@@ -27,11 +36,7 @@ func (contribution *extension) ConfigureChild(
 	}
 	configuration.PromptSections = append(
 		configuration.PromptSections,
-		systemprompt.PromptSection{
-			Name:  "tool:report",
-			Order: 117,
-			Text:  systemprompt.StaticText(reportPrompt),
-		},
+		Section(),
 	)
 	return nil
 }

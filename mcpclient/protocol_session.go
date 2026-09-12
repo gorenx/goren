@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/client/transport"
+	sdktransport "github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -32,7 +32,7 @@ type protocolSession struct {
 }
 
 func newProtocolSession(
-	wire transport.Interface,
+	wire sdktransport.Interface,
 	settings protocolSettings,
 ) (*protocolSession, error) {
 	if settings.identity.Name == "" || settings.identity.Version == "" {

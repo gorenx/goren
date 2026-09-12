@@ -93,7 +93,12 @@ func NewCatalog() *Catalog {
 }
 
 // RegisterUnary adds one canonical method with its typed decoder and handler.
-func RegisterUnary[P, V any](methods *Catalog, method string, decodePayload PayloadDecoder[P], operation UnaryHandler[P, V]) error {
+func RegisterUnary[P, V any](
+	methods *Catalog,
+	method string,
+	decodePayload PayloadDecoder[P],
+	operation UnaryHandler[P, V],
+) error {
 	if methods == nil {
 		return errors.New("apiproxy: catalog is nil")
 	}

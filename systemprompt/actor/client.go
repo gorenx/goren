@@ -5,6 +5,7 @@ import (
 	"errors"
 	"github.com/gorenx/goren/systemprompt"
 	goakt "github.com/tochemey/goakt/v4/actor"
+	"slices"
 	"time"
 )
 
@@ -124,3 +125,32 @@ func (endpoint *Client) Remove(ctx context.Context, identifier systemprompt.Regi
 }
 
 var _ systemprompt.SystemPrompt = (*Client)(nil)
+
+// ApplyBaseline updates the shared configuration consumed at subsequent Turn boundaries.
+// It does not mutate an Agent's already captured prompt or own its lifecycle.
+func (endpoint *Client) ApplyBaseline(ctx context.Context, input systemprompt.Config) error {
+	detached := systemprompt.Config{
+		Persona:   input.Persona,
+		ToolOrder: slices.Clone(input.ToolOrder),
+	}
+	if input.IncludeHarnessIdentity != nil {
+		selected := *input.IncludeHarnessIdentity
+		detached.IncludeHarnessIdentity = &selected
+	}
+	if input.IncludeRuntimeContext != nil {
+		selected := *input.IncludeRuntimeContext
+		detached.IncludeRuntimeContext = &selected
+	}
+	payload, err := endpoint.call(ctx, ApplyBaseline{
+		Context: ctx,
+		Config:  detached,
+	})
+	if err != nil {
+		return err
+	}
+	reply, ok := payload.(Completion)
+	if !ok {
+		return errors.New("systemprompt: invalid baseline response")
+	}
+	return reply.Err
+}

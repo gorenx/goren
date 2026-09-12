@@ -6,28 +6,27 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorenx/goren/tools"
+	toolregistry "github.com/gorenx/goren/tools/registry"
 	catalogactor "github.com/gorenx/goren/tools/registry/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
 func (owner *Runtime) receiveConfiguration(gc *goakt.GrainContext) bool {
 	switch input := gc.Message().(type) {
-	case configurationNotice:
-		gc.Response(Completion{})
-		if input.creationID == owner.creationID {
-			owner.changed = true
-		}
 	case RefreshConfiguration:
 		if input.ID == "" ||
 			input.CreationID != owner.creationID ||
-			owner.toolRuntime == nil ||
-			owner.active != nil ||
+			owner.collection == nil ||
+			owner.request != nil ||
 			len(owner.calls) != 0 {
 			gc.Response(Definitions{Err: errors.New("tools: configuration requires an idle runtime and current creation")})
 			return true
 		}
-		if !owner.changed {
-			definitions, err := owner.toolRuntime.Definitions()
+		if owner.connections.changed() {
+			owner.changed = true
+		}
+		if !owner.changed || len(owner.retries) != 0 {
+			definitions, err := owner.collection.Definitions()
 			gc.Response(Definitions{
 				Value: definitions,
 				Err:   err,
@@ -43,21 +42,23 @@ func (owner *Runtime) receiveConfiguration(gc *goakt.GrainContext) bool {
 			reply:     reply,
 			refreshID: input.ID,
 		}
-		owner.active = current
+		owner.request = current
 		owner.changed = false
-		business := owner.toolRuntime
-		directory := owner.catalog
-		instances := owner.instances
+		owner.scheduler = nil
+		instances := owner.newToolClient(gc)
 		owner.schedule(gc, current, func(ctx context.Context) error {
-			_, err := business.Apply(ctx, directory, instances)
-			return err
+			applied, err := owner.collection.Snapshot()
+			if err != nil {
+				return err
+			}
+			return owner.applyCatalog(ctx, applied.Configuration, instances)
 		})
 	case CancelConfiguration:
 		if input.CreationID == owner.creationID &&
-			owner.active != nil &&
-			owner.active.refreshID == input.ID &&
-			owner.active.cancel != nil {
-			owner.active.cancel()
+			owner.request != nil &&
+			owner.request.refreshID == input.ID &&
+			owner.request.cancel != nil {
+			owner.request.cancel()
 		}
 		gc.Response(Completion{})
 	default:
@@ -67,17 +68,17 @@ func (owner *Runtime) receiveConfiguration(gc *goakt.GrainContext) bool {
 }
 
 func (owner *Runtime) finishRefresh(gc *goakt.GrainContext, current *operation, failure error) {
-	if owner.active != current {
+	if owner.request != current {
 		return
 	}
 	current.cancel()
-	owner.active = nil
+	owner.request = nil
 	if failure != nil {
 		owner.changed = true
 		current.reply.Response(Definitions{Err: failure})
 		return
 	}
-	definitions, err := owner.toolRuntime.Definitions()
+	definitions, err := owner.collection.Definitions()
 	if err == nil {
 		topic := gc.ActorSystem().TopicActor()
 		if topic == nil {
@@ -95,47 +96,33 @@ func (owner *Runtime) finishRefresh(gc *goakt.GrainContext, current *operation, 
 	})
 }
 
-// Watcher forwards scope-relevant invalidation only; it never merges or applies schemas.
-// Agent lifecycle owns this Actor and stops it before releasing the Runtime.
-type Watcher struct {
-	AgentID    string
-	CreationID string
-	Target     *goakt.GrainIdentity
+// applyConfiguration reads the initial Registry selection when no prepared
+// configuration was supplied. Later discovery refreshes reuse the applied
+// snapshot; they do not adopt Registry configuration changes.
+func (owner *Runtime) applyConfiguration(ctx context.Context, directory *catalogactor.Client, instances *toolClient) error {
+	configuration, err := directory.Read(ctx, owner.agentID)
+	if err != nil {
+		return err
+	}
+	return owner.applyCatalog(ctx, configuration, instances)
 }
 
-type configurationNotice struct{ creationID string }
-
-// PreStart acquires no business resources.
-func (*Watcher) PreStart(*goakt.Context) error { return nil }
-
-// PostStop leaves PubSub membership cleanup to the framework's terminated-subscriber tracking.
-func (*Watcher) PostStop(*goakt.Context) error { return nil }
-
-// Receive subscribes once and forwards configuration facts to the exact Runtime lifetime.
-func (owner *Watcher) Receive(rc *goakt.ReceiveContext) {
-	switch input := rc.Message().(type) {
-	case *goakt.PostStart:
-		rc.Tell(rc.ActorSystem().TopicActor(), goakt.NewSubscribe(catalogactor.ConfigurationTopic))
-	case *goakt.SubscribeAck:
-		if input.Topic() == catalogactor.ConfigurationTopic {
-			owner.notify(rc)
-		}
-	case catalogactor.ConfigurationChanged:
-		if input.SessionID == "" || string(input.SessionID) == owner.AgentID {
-			owner.notify(rc)
-		}
+func (owner *Runtime) applyCatalog(ctx context.Context, configuration toolregistry.Configuration, instances *toolClient) error {
+	var err error
+	definitions := append(configuration.Global.MCP, configuration.Custom.MCP...)
+	if err := owner.connections.reconcile(ctx, definitions); err != nil {
+		return err
 	}
-}
-
-func (owner *Watcher) notify(rc *goakt.ReceiveContext) {
-	call := rc.RequestGrain(owner.Target, configurationNotice{creationID: owner.CreationID})
-	if call == nil {
-		return
+	configuration.Global, err = owner.connections.catalog(configuration.Global)
+	if err != nil {
+		return err
 	}
-	logger := rc.Logger()
-	call.Then(func(_ any, failure error) {
-		if failure != nil {
-			logger.Error(failure)
-		}
-	})
+	if _, err := owner.collection.Apply(ctx, configuration, instances); err != nil {
+		return err
+	}
+	applied, err := owner.collection.Snapshot()
+	if err != nil {
+		return err
+	}
+	return owner.connections.retire(ctx, applied.ProviderIDs)
 }

@@ -2,12 +2,11 @@ package systemprompt
 
 // NewLayer constructs the root registration state without a framework lifecycle.
 func NewLayer(settings ValidatedConfig) (*PromptLayer, error) {
+	baseline := settings.definitions()
 	owner := &PromptLayer{
 		settings: settings,
+		baseline: &baseline,
 		store:    newPromptStore(),
-	}
-	if err := owner.initialize(); err != nil {
-		return nil, err
 	}
 	return owner, nil
 }
@@ -20,27 +19,23 @@ func DeriveLayer(base Snapshot) *PromptLayer {
 	}
 }
 
-func (owner *PromptLayer) initialize() error {
-	if owner.settings.includeHarnessIdentity {
-		if _, err := owner.store.addSection(PromptSection{
+// definitions derives configuration content without registering lifecycle effects.
+func (input ValidatedConfig) definitions() promptLayerSnapshot {
+	sections := make([]PromptSection, 0, 2)
+	if input.includeHarnessIdentity {
+		sections = append(sections, PromptSection{
 			Name:  harnessIdentityName,
 			Order: harnessIdentityOrder,
 			Text:  StaticText(harnessIdentityText),
-		}); err != nil {
-			return err
-		}
+		})
 	}
-	if _, err := owner.store.addSection(PromptSection{
+	sections = append(sections, PromptSection{
 		Name:  PersonaSection,
 		Order: PersonaOrder,
-		Text:  StaticText(owner.settings.persona),
-	}); err != nil {
-		return err
+		Text:  StaticText(input.persona),
+	})
+	return promptLayerSnapshot{
+		sections:          sections,
+		contextSuppressed: !input.includeRuntimeContext,
 	}
-	if !owner.settings.includeRuntimeContext {
-		if _, err := owner.store.addSuppressor(disabledRuntimeContextSuppressor); err != nil {
-			return err
-		}
-	}
-	return nil
 }

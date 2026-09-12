@@ -10,7 +10,6 @@ import (
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
-	boundcontract "github.com/gorenx/goren/subagent/bound"
 	sharedexecution "github.com/gorenx/goren/subagent/internal/execution"
 )
 
@@ -134,9 +133,8 @@ func (owner *Service) Start(
 	}
 }
 
-// Send delegates Bound admission to the Bound owner so config replacement and
-// message admission are serialized. Other resident modes use the ordinary
-// Agent Inbox; only an unbound cold child is offered to Continuable resume.
+// Send admits live child input through the ordinary Agent Inbox and offers
+// a cold child to Continuable resume.
 func (owner *Service) Send(
 	ctx context.Context,
 	parentID session.SessionID,
@@ -155,84 +153,6 @@ func (owner *Service) Send(
 		content,
 		options,
 	)
-}
-
-// Deliver delegates source-owned input admission to the Bound owner.
-func (owner *Service) Deliver(
-	ctx context.Context,
-	addressValue boundcontract.Address,
-	inputValue boundcontract.Input,
-) (boundcontract.Receipt, error) {
-	if beginErr := owner.beginCall(); beginErr != nil {
-		return boundcontract.Receipt{}, beginErr
-	}
-	defer owner.activeCalls.Done()
-	selected, err := owner.boundImplementation()
-	if err != nil {
-		return boundcontract.Receipt{}, err
-	}
-	return selected.Deliver(ctx, addressValue, inputValue)
-}
-
-// List returns the committed global Bound Definition index.
-func (owner *Service) List(
-	ctx context.Context,
-) ([]boundcontract.Definition, error) {
-	if beginErr := owner.beginCall(); beginErr != nil {
-		return nil, beginErr
-	}
-	defer owner.activeCalls.Done()
-	selected, err := owner.boundImplementation()
-	if err != nil {
-		return nil, err
-	}
-	return selected.List(ctx)
-}
-
-// Create commits one new global Bound Definition.
-func (owner *Service) Create(
-	ctx context.Context,
-	creation boundcontract.Creation,
-) (boundcontract.Definition, error) {
-	if beginErr := owner.beginCall(); beginErr != nil {
-		return boundcontract.Definition{}, beginErr
-	}
-	defer owner.activeCalls.Done()
-	selected, err := owner.boundImplementation()
-	if err != nil {
-		return boundcontract.Definition{}, err
-	}
-	return selected.Create(ctx, creation)
-}
-
-// Replace commits one complete next Bound Definition revision.
-func (owner *Service) Replace(
-	ctx context.Context,
-	replacement boundcontract.Replacement,
-) (boundcontract.Definition, error) {
-	if beginErr := owner.beginCall(); beginErr != nil {
-		return boundcontract.Definition{}, beginErr
-	}
-	defer owner.activeCalls.Done()
-	selected, err := owner.boundImplementation()
-	if err != nil {
-		return boundcontract.Definition{}, err
-	}
-	return selected.Replace(ctx, replacement)
-}
-
-// AgentSessionStarted requests a level-triggered consistency pass. Bound owns
-// the task lifetime and returns before Session or Agent I/O begins.
-func (owner *Service) AgentSessionStarted(subject session.SessionID) {
-	if beginErr := owner.beginCall(); beginErr != nil {
-		return
-	}
-	defer owner.activeCalls.Done()
-	selected, err := owner.boundImplementation()
-	if err != nil {
-		return
-	}
-	selected.SessionStarted(subject)
 }
 
 // Interrupt performs common live-execution lookup and ancestor authorization,
@@ -320,20 +240,6 @@ func (owner *Service) implementation(
 	)
 }
 
-func (owner *Service) boundImplementation() (bound, error) {
-	candidate, err := owner.implementation(subagent.ModeBound)
-	if err != nil {
-		return nil, err
-	}
-	selected, supported := candidate.(bound)
-	if !supported {
-		return nil, errors.New(
-			"subagent: Bound implementation is incomplete",
-		)
-	}
-	return selected, nil
-}
-
 func unavailable() error {
 	return &subagent.Error{
 		Code:    subagent.ErrorDraining,
@@ -355,8 +261,6 @@ func validateImplementation(candidate implementation) error {
 		_, complete = candidate.(oneShot)
 	case subagent.ModeContinuable:
 		_, complete = candidate.(continuable)
-	case subagent.ModeBound:
-		_, complete = candidate.(bound)
 	default:
 		return fmt.Errorf(
 			"subagent: unsupported implementation mode %q",
@@ -374,5 +278,3 @@ func validateImplementation(candidate implementation) error {
 
 var _ subagent.Starter = (*Service)(nil)
 var _ subagent.ChildControl = (*Service)(nil)
-var _ boundcontract.Definitions = (*Service)(nil)
-var _ boundcontract.Inbox = (*Service)(nil)

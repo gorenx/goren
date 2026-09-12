@@ -47,14 +47,15 @@ func TestPreparationCallsNamedApprovalBeforeOriginalBody(t *testing.T) {
 				definitions = append(definitions, permission)
 			}
 			state := newToolsFixture(t, askPolicy("needs permission"))
-			coordinator := testScheduler(t, state.policies, definitions...)
+			coordinator := testScheduler(t, definitions...)
 			result := executeCall(t, coordinator, ctx, tools.ToolExecutionInput{
 				SessionID:  "conversation",
 				CallID:     "original",
 				RootCallID: "root",
 				Name:       "danger",
 				Arguments:  json.RawMessage(`{}`),
-			})
+			}, state.policies,
+			)
 			allowed := scenario == "allowed-once"
 			if result.Failed() == allowed || executions != boolCount(allowed) {
 				t.Fatalf("result=%+v body calls=%d", result, executions)
@@ -89,7 +90,7 @@ func TestUnconfirmedApprovalCannotDispatchOrFinalizeOriginalCall(t *testing.T) {
 		failure: failure,
 	}
 	state := newToolsFixture(t, askPolicy("permission"))
-	coordinator, err := NewScheduler([]tools.Descriptor{definition.Describe(), permission}, state.policies, endpoint)
+	coordinator, err := NewScheduler([]tools.Descriptor{definition.Describe(), permission}, endpoint)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +99,8 @@ func TestUnconfirmedApprovalCannotDispatchOrFinalizeOriginalCall(t *testing.T) {
 		CallID:    agentmessage.CallID("original"),
 		Name:      "danger",
 		Arguments: json.RawMessage(`{}`),
-	})
+	}, state.policies,
+	)
 	var delivery *DeliveryError
 	if !errors.As(err, &delivery) || !errors.Is(err, failure) || current == nil {
 		t.Fatalf("uncertainty lost: %v", err)

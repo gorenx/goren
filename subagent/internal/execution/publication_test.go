@@ -66,7 +66,7 @@ func TestPublishRejectsMismatchedExecutionIdentityBeforeAnnouncement(t *testing.
 		publisher,
 		Entry{
 			Execution: running,
-			Mode:      subagent.ModeBound,
+			Mode:      subagent.ModeOneShot,
 			Parent: agentregistry.Creation{
 				AgentID:    "parent",
 				CreationID: "parent-run",

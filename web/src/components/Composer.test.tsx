@@ -28,12 +28,6 @@ const snapshot: ConversationSnapshot = {
   onlineDownlinks: 2,
   composerState: 'composer.ready',
 	credentialLoaded: true,
-	boundDefinitionsLoaded: true,
-	boundDefinitions: [],
-	boundToolsState: 'ready',
-	boundTools: [],
-	boundExtensionsState: 'ready',
-	boundExtensions: [],
 }
 
 interface ComposerFixture {
@@ -56,6 +50,45 @@ describe('Composer', () => {
       act(() => mountedRoot?.unmount())
       mountedRoot = undefined
     }
+  })
+
+  it.each(['cancel', 'unmount'])('opens one native picker and preserves the chat draft on %s', async action => {
+    let finish: (() => void) | undefined
+    const pickWorkspace = vi.fn(() => new Promise<void>(resolve => { finish = resolve }))
+    const submitPrompt = vi.fn(async () => {})
+    const store = {
+      sessionModels: async () => ({ current: { provider: 'deepseek', model: 'deepseek-v4-flash' }, groups: [] }),
+      currentQuestion: () => undefined,
+      currentSession: () => ({ ...session, cwd: '/workspace-a' }),
+      pickWorkspace,
+      submitPrompt,
+    } as unknown as ConversationStore
+    act(() => {
+      mountedRoot = createRoot(container)
+      mountedRoot.render(<I18nProvider><Composer store={store} snapshot={snapshot} /></I18nProvider>)
+    })
+    const textarea = container.querySelector<HTMLTextAreaElement>('#prompt')!
+    await act(async () => replaceTextareaValue(textarea, 'keep this draft'))
+    const trigger = container.querySelector<HTMLButtonElement>('.workspace-button')!
+    await act(async () => { trigger.click(); trigger.click() })
+    expect(pickWorkspace).toHaveBeenCalledTimes(1)
+    expect(trigger.disabled).toBe(true)
+    expect(document.querySelector('[role=dialog]')).toBeNull()
+    expect(document.querySelector('#workspace-path')).toBeNull()
+    expect(submitPrompt).not.toHaveBeenCalled()
+    expect(textarea.value).toBe('keep this draft')
+    const signal = (pickWorkspace.mock.calls[0] as unknown as [AbortSignal])[0]
+    if (action === 'cancel') {
+      const cancel = [...container.querySelectorAll<HTMLButtonElement>('button')].find(button => /Cancel directory selection|取消目录选择/.test(button.getAttribute('aria-label') ?? ''))!
+      await act(async () => cancel.click())
+      expect(textarea.value).toBe('keep this draft')
+    } else {
+      act(() => mountedRoot?.unmount())
+      mountedRoot = undefined
+    }
+    expect(signal.aborted).toBe(true)
+    await act(async () => finish?.())
+    if (action === 'cancel') expect(trigger.disabled).toBe(false)
   })
 
   it('sends cancellation from the stop button and waits for idle before restoring send', async () => {

@@ -30,6 +30,24 @@ type Config struct {
 	ToolResultLimit      int      `json:"toolResultLimit,omitempty"`
 }
 
+// Equal compares complete configuration values. Call Validate first when
+// omitted defaults should be treated as their effective values.
+func (settings Config) Equal(other Config) bool {
+	return settings.ServerName == other.ServerName &&
+		settings.Transport == other.Transport &&
+		settings.Command == other.Command &&
+		slices.Equal(settings.Args, other.Args) &&
+		settings.CWD == other.CWD &&
+		settings.URL == other.URL &&
+		settings.SkipDiscover == other.SkipDiscover &&
+		settings.RequestTimeoutMs == other.RequestTimeoutMs &&
+		settings.ElicitationTimeoutMs == other.ElicitationTimeoutMs &&
+		settings.MaxInputRoundTrips == other.MaxInputRoundTrips &&
+		settings.MaxTools == other.MaxTools &&
+		settings.MaxPages == other.MaxPages &&
+		settings.ToolResultLimit == other.ToolResultLimit
+}
+
 // DecodeConfig rejects unknown fields and trailing input before any effect.
 func DecodeConfig(data []byte) (Config, error) {
 	var settings Config

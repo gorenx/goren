@@ -13,6 +13,7 @@ import (
 // controlTools adapts Subagent control and directory capabilities into the three
 // model-facing control Tool definitions. It has no Plugin lifecycle.
 type controlTools struct {
+	messages  Sender
 	children  subagent.ChildControl
 	directory subagent.ChildDirectory
 	activity  activityReader
@@ -23,16 +24,18 @@ type activityReader interface {
 }
 
 func newControlTools(
+	messages Sender,
 	children subagent.ChildControl,
 	directory subagent.ChildDirectory,
 	activity activityReader,
 ) (*controlTools, error) {
-	if children == nil || directory == nil || activity == nil {
+	if messages == nil || children == nil || directory == nil || activity == nil {
 		return nil, errors.New(
-			"subagent control tools require ChildControl, ChildDirectory, and activity reader",
+			"subagent control tools require Sender, ChildControl, ChildDirectory, and activity reader",
 		)
 	}
 	return &controlTools{
+		messages:  messages,
 		children:  children,
 		directory: directory,
 		activity:  activity,

@@ -20,6 +20,9 @@ type Agent interface {
 	// ID returns the stable business identity shared by the Agent and its Session.
 	ID() session.SessionID
 
+	// Role identifies the admitted Agent capability without inferring it from ancestry.
+	Role() agent.Role
+
 	// ParentID returns the parent of this live creation, or nil for a root Agent.
 	// It does not infer ownership from the Session's historical origin.
 	ParentID() *session.SessionID
@@ -119,6 +122,13 @@ func (access *activation) ordinary(ctx context.Context, identifier session.Sessi
 		if err != nil {
 			return nil, err
 		}
+		recordedRole, err := agent.RoleFromEvents(identifier, inspection.Events)
+		if err != nil {
+			return nil, err
+		}
+		if recordedRole == agent.CompanionRole {
+			return nil, &SubagentOwnershipError{identifier: identifier}
+		}
 		subject, err = access.agents.Create(ctx, Opening{
 			ID:      identifier,
 			Restore: true,
@@ -136,7 +146,7 @@ func (access *activation) ordinary(ctx context.Context, identifier session.Sessi
 	if subject.ID() != identifier {
 		return nil, errors.New("session API: resolution returned another identity")
 	}
-	if subject.ParentID() != nil {
+	if subject.ParentID() != nil && subject.Role() != agent.CompanionRole {
 		return nil, &SubagentOwnershipError{
 			identifier: identifier,
 		}

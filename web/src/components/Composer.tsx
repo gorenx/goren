@@ -3,6 +3,7 @@ import type { ConversationSnapshot } from '../types'
 import type { ConversationStore } from '../conversation-store'
 import { encodeImage, imageTypes, type ImageInput } from '../images'
 import { ModelPicker } from './ModelPicker'
+import { WorkspacePicker } from './WorkspacePicker'
 import { SendIcon, StopIcon } from '../icons'
 import { useI18n } from '../i18n'
 
@@ -23,8 +24,9 @@ export function Composer({ store, snapshot }: ComposerProps): React.JSX.Element 
   const composing = useRef(false)
   const submitting = useRef(false)
   const waitingForAnswer = store.currentQuestion() !== undefined
-  const agentRunning = store.currentSession()?.running === true
-  const canCompose = snapshot.currentSessionId !== undefined && snapshot.phase !== 'failed' && !waitingForAnswer
+  const selectedSession = store.currentSession()
+  const agentRunning = selectedSession?.running === true
+  const canCompose = snapshot.currentSessionId !== undefined && snapshot.phase !== 'failed' && !waitingForAnswer && !snapshot.creatingSession
 
   useLayoutEffect(() => {
     const element = textarea.current
@@ -123,7 +125,8 @@ export function Composer({ store, snapshot }: ComposerProps): React.JSX.Element 
         <div className="flex items-center justify-between gap-3 px-3 pb-2.5">
           <div className="flex min-w-0 items-center gap-2 text-xs text-tertiary">
             <button type="button" className="icon-button" disabled={!canCompose || reading} aria-label={translate('composer.addImage')} title={translate('composer.addImage')} onClick={() => picker.current?.click()}><span aria-hidden="true" className="text-xl">＋</span></button>
-            {snapshot.currentSessionId !== undefined && <ModelPicker store={store} sessionId={snapshot.currentSessionId} />}
+            {selectedSession !== undefined && <ModelPicker key={selectedSession.sessionId} store={store} session={selectedSession} />}
+            <WorkspacePicker store={store} cwd={store.currentSession()?.cwd ?? snapshot.host?.cwd} disabled={snapshot.creatingSession || snapshot.phase !== 'ready' || reading || submitting.current} />
             <span className="hidden font-mono text-[9px] uppercase tracking-[0.08em] text-caption sm:inline">{translate('composer.enterToSend')}</span>
           </div>
           {agentRunning

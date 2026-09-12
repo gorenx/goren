@@ -33,7 +33,7 @@ type registration struct {
 	mutex     sync.Mutex
 	extension subagent.Extension
 	// name is nil for a common Extension. A non-nil value is the stable
-	// Bound-config selection name and does not identify a Tool or Plugin.
+	// named selection and does not identify a Tool or Plugin.
 	name     *string
 	state    registrationState
 	closeErr error
@@ -173,7 +173,7 @@ func (owner *Registry) ValidateSelection(extensionNames []string) error {
 }
 
 // ListExtensions returns detached descriptors for currently registered named
-// Extensions. Registration order does not determine Bound selection order.
+// Extensions. Registration order does not determine selection order.
 func (owner *Registry) ListExtensions() []subagent.ExtensionDescriptor {
 	owner.mutex.Lock()
 	defer owner.mutex.Unlock()

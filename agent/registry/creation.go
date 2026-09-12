@@ -2,13 +2,13 @@ package registry
 
 import (
 	"errors"
-	middlewareactor "github.com/gorenx/goren/agent/middleware/actor"
 	"reflect"
 	"regexp"
 	"slices"
 	"time"
 
 	"github.com/gorenx/goren/agent"
+	middlewareactor "github.com/gorenx/goren/agent/middleware/actor"
 	"github.com/gorenx/goren/session"
 	sessionactor "github.com/gorenx/goren/session/actor"
 	"github.com/gorenx/goren/systemprompt"
@@ -19,21 +19,30 @@ import (
 // CreateAgent starts one exact lifetime. Concurrent retries share the first input;
 // a failed creation remains reserved until CloseAgent confirms its cleanup.
 type CreateAgent struct {
-	Creation        Creation
-	Parent          *Creation
-	Restore         bool
-	Options         session.CreateOptions
-	AgentOptions    *agent.Options
-	Storage         sessionactor.RecoveryStorage
-	SessionRegistry *goakt.GrainIdentity
-	ModelConfig     *goakt.GrainIdentity
-	ModelRouter     *goakt.PID
-	Middleware      *goakt.GrainIdentity
-	Handlers        middlewareactor.Handlers
-	PromptRegistry  *goakt.GrainIdentity
-	ToolsRegistry   *goakt.GrainIdentity
+	// Manager owns child lifecycle decisions. Nil delegates configuration restarts to Registry.
+	Manager *goakt.GrainIdentity
+	// configuration is derived for this installation, never part of the caller contract.
+	configuration     *toolregistry.Configuration
+	Role              agent.Role
+	Creation          Creation
+	Parent            *Creation
+	Restore           bool
+	Options           session.CreateOptions
+	AgentOptions      *agent.Options
+	Storage           sessionactor.RecoveryStorage
+	SessionRegistry   *goakt.GrainIdentity
+	ModelConfig       *goakt.GrainIdentity
+	ModelRouter       *goakt.PID
+	Middleware        *goakt.GrainIdentity
+	Handlers          middlewareactor.Handlers
+	PromptRegistry    *goakt.GrainIdentity
+	ToolsRegistry     *goakt.GrainIdentity
+	Settings          *goakt.GrainIdentity
+	ConfigurationName string
 	// Tools overrides the registered defaults for this Agent lifetime.
 	Tools *toolregistry.Catalog
+	// Prompt selects an independent prompt baseline; nil uses the shared registry.
+	Prompt *systemprompt.Config
 	// PromptSections are local definitions captured for this Agent lifetime.
 	PromptSections []systemprompt.PromptSection
 	// Commands enables the independent command runtime when its global Registry is supplied.
@@ -62,13 +71,21 @@ type FindAgent struct {
 // input. The Registry remains the sole owner of composition dependencies and
 // parent-child admission.
 type CreateChildAgent struct {
+	// Manager receives restart requests for this exact child lifetime.
+	Manager        *goakt.GrainIdentity
+	ConfigName     string
+	Role           agent.Role
 	Parent         Creation
 	Child          Creation
 	Restore        bool
 	Options        session.CreateOptions
 	AgentOptions   *agent.Options
+	Prompt         *systemprompt.Config
 	Tools          *toolregistry.Catalog
 	PromptSections []systemprompt.PromptSection
+	// Components replaces the parent's additional capability owners. Nil inherits
+	// the frozen parent list; a non-nil empty slice installs no additional components.
+	Components []*goakt.GrainIdentity
 }
 
 // Ready contains routes from one completed creation. An error exposes no routes.
@@ -86,6 +103,15 @@ var sessionName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]*$`)
 
 // validate checks construction input; parent admission remains a Registry rule.
 func (input CreateAgent) validate() error {
+	if input.Manager != nil && input.Parent == nil {
+		return errors.New("agent registry: lifecycle manager requires a parent")
+	}
+	if !input.Role.Valid() || input.Role == agent.CompanionRole && input.Parent == nil {
+		return agent.ErrRole
+	}
+	if input.Parent == nil && input.Options.Metadata.ParentSession != nil || input.Parent != nil && input.Options.Metadata.ParentSession != nil && *input.Options.Metadata.ParentSession != input.Parent.AgentID {
+		return errors.New("agent registry: Session parent does not match creation")
+	}
 	err := input.Handlers.Validate()
 	if err != nil {
 		return err
@@ -128,6 +154,10 @@ func (input CreateAgent) clone() CreateAgent {
 		captured := input.AgentOptions.Clone()
 		input.AgentOptions = &captured
 	}
+	if input.Prompt != nil {
+		captured := input.Prompt.Clone()
+		input.Prompt = &captured
+	}
 	input.Handlers = input.Handlers.Clone()
 	input.PromptSections = slices.Clone(input.PromptSections)
 	if input.Tools != nil {
@@ -144,7 +174,8 @@ func (input CreateAgent) clone() CreateAgent {
 
 // matches prevents a repeated creation request from changing frozen configuration.
 func (original CreateAgent) matches(input CreateAgent) bool {
-	if original.Creation != input.Creation ||
+	if !sameRoute(original.Manager, input.Manager) || original.Role != input.Role ||
+		original.Creation != input.Creation ||
 		!reflect.DeepEqual(original.Parent, input.Parent) ||
 		original.Restore != input.Restore ||
 		!reflect.DeepEqual(original.Options, input.Options) ||
@@ -153,13 +184,18 @@ func (original CreateAgent) matches(input CreateAgent) bool {
 		original.Timeout != input.Timeout ||
 		!reflect.DeepEqual(original.Tools, input.Tools) ||
 		!reflect.DeepEqual(original.PromptSections, input.PromptSections) ||
+		!reflect.DeepEqual(original.Prompt, input.Prompt) ||
 		!sameRoute(original.SessionRegistry, input.SessionRegistry) ||
 		!sameRoute(original.ModelConfig, input.ModelConfig) ||
 		original.ModelRouter != input.ModelRouter ||
-		!reflect.DeepEqual(original.Handlers, input.Handlers) ||
+		!sameMiddlewareRoutes(original.Handlers.PreStep, input.Handlers.PreStep) ||
+		!sameMiddlewareRoutes(original.Handlers.RequestError, input.Handlers.RequestError) ||
+		!sameMiddlewareRoutes(original.Handlers.TurnStopping, input.Handlers.TurnStopping) ||
 		!sameRoute(original.Middleware, input.Middleware) ||
 		!sameRoute(original.PromptRegistry, input.PromptRegistry) ||
 		!sameRoute(original.ToolsRegistry, input.ToolsRegistry) ||
+		!sameRoute(original.Settings, input.Settings) ||
+		original.ConfigurationName != input.ConfigurationName ||
 		!sameRoute(original.Commands, input.Commands) ||
 		len(original.Components) != len(input.Components) {
 		return false
@@ -177,4 +213,12 @@ func sameRoute(left, right *goakt.GrainIdentity) bool {
 		return left == right
 	}
 	return left.Equal(right)
+}
+
+// Middleware selections compare registration order and routing identity, not
+// framework-internal validation state retained by each GrainIdentity.
+func sameMiddlewareRoutes(left, right []middlewareactor.Route) bool {
+	return slices.EqualFunc(left, right, func(first, second middlewareactor.Route) bool {
+		return first.Definition == second.Definition && sameRoute(first.Target, second.Target)
+	})
 }

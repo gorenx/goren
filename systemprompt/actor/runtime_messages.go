@@ -8,6 +8,9 @@ import (
 
 // InitializeRuntime asks the Runtime to obtain its definitions from their owners.
 type InitializeRuntime struct {
+	// Config selects the initial baseline independently of the definition source.
+	// Nil uses the Registry baseline for initialization.
+	Config  *systemprompt.Config
 	AgentID session.SessionID
 	// PromptRegistry owns registered prompt sections, contexts and variables.
 	// The Runtime requests Prepare to obtain their definition snapshot; it does
@@ -21,8 +24,16 @@ type InitializeRuntime struct {
 	Sections []systemprompt.PromptSection
 }
 
-// ApplyTools delivers a detached view of a committed tools event.
+// ApplyTools installs a committed tool view without switching shared prompt definitions.
+// The baseline selected at initialization is retained.
 type ApplyTools struct {
+	AgentID     session.SessionID
+	Definitions systemprompt.ToolDefinitions
+}
+
+// ApplyConfiguration installs the acknowledged tools and refreshes shared prompt
+// definitions at a Turn boundary. Local sections and active snapshots are retained.
+type ApplyConfiguration struct {
 	AgentID session.SessionID
 
 	Definitions systemprompt.ToolDefinitions
@@ -58,7 +69,8 @@ type ReadRuntime struct{}
 
 // RuntimeView confirms an initialized Prompt runtime without assembling a prompt.
 type RuntimeView struct {
-	Err error
+	Config systemprompt.Config
+	Err    error
 }
 
 // RuntimeName returns this service's stable address within a Session lifetime.

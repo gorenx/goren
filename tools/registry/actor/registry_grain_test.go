@@ -52,7 +52,7 @@ func ask[T any](t *testing.T, system goakt.ActorSystem, target *goakt.GrainIdent
 	return value
 }
 
-func TestSchemaRegistrationRetainsConfigurationWhenNotificationFails(t *testing.T) {
+func TestSchemaRegistrationDoesNotRequirePubSub(t *testing.T) {
 	for _, pubsub := range []bool{false, true} {
 		system, target := startRegistry(t, pubsub)
 		reply := ask[toolactor.Completion](t, system, target, toolactor.RegisterSource{
@@ -66,7 +66,7 @@ func TestSchemaRegistrationRetainsConfigurationWhenNotificationFails(t *testing.
 				},
 			},
 		})
-		if (reply.Err == nil) != pubsub {
+		if reply.Err != nil {
 			t.Fatalf("notification=%v pubsub=%v", reply.Err, pubsub)
 		}
 		captured := ask[toolactor.Configuration](t, system, target, toolactor.ReadConfiguration{SessionID: "agent"})

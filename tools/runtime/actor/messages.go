@@ -13,15 +13,17 @@ import (
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
-// InitializeRuntime binds an Agent creation and applies its initial overrides.
+// InitializeRuntime binds an Agent creation and applies its initial Session catalog.
 // Only the Agent lifecycle owner starts this Runtime and authorizes its activation.
 type InitializeRuntime struct {
-	AgentID    session.SessionID
-	CreationID string
-	Authority  *goakt.GrainIdentity
-	Registry   *goakt.GrainIdentity
-	Config     *toolregistry.Catalog
-	Timeout    time.Duration
+	// Configuration is resolved once by the lifecycle owner before resources open.
+	Configuration *toolregistry.Configuration
+	AgentID       session.SessionID
+	CreationID    string
+	Authority     *goakt.GrainIdentity
+	Registry      *goakt.GrainIdentity
+	Config        *toolregistry.Catalog
+	Timeout       time.Duration
 }
 
 // CloseRuntime releases only the original activation's configuration and instances.
@@ -39,6 +41,46 @@ type ReadRuntime struct {
 type RuntimeView struct {
 	Snapshot toolruntime.Snapshot
 	Err      error
+}
+
+// ReadConnections queries the selected MCP transports without refreshing tools.
+type ReadConnections struct {
+	CreationID string
+}
+
+// RetryConnection restores one selected MCP target without waiting for a Turn.
+// It never changes configuration or replays a tool call.
+type RetryConnection struct {
+	CreationID string
+	Name       string
+	Context    context.Context
+}
+
+// ConnectionStatus describes transport health, independently of tool visibility.
+type ConnectionStatus string
+
+const (
+	// ConnectionConnected means the selected transport's subscription is alive.
+	ConnectionConnected ConnectionStatus = "connected"
+	// ConnectionFailed means the selected transport can no longer serve tools.
+	ConnectionFailed ConnectionStatus = "failed"
+	// ConnectionReconnecting means a requested recovery has not settled yet.
+	ConnectionReconnecting ConnectionStatus = "reconnecting"
+)
+
+// ConnectionView contains non-secret facts about one selected MCP transport.
+// ToolCount counts discovered tools, before visibility policies are applied.
+type ConnectionView struct {
+	Name      string
+	Transport string
+	Status    ConnectionStatus
+	ToolCount int
+}
+
+// Connections returns detached MCP state in connection-name order.
+type Connections struct {
+	Values []ConnectionView
+	Err    error
 }
 
 // Completion confirms a business operation, including any required cleanup.

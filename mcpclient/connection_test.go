@@ -354,7 +354,7 @@ func TestStdioCancellationClosesBlockedPipeWriter(t *testing.T) {
 	arguments, _ := json.Marshal(map[string]string{"large": strings.Repeat("x", 2<<20)})
 	returned := make(chan error, 1)
 	go func() {
-		_, failure := remote.session.callTool(work, "wait", arguments)
+		_, failure := remote.current.session.callTool(work, "wait", arguments)
 		returned <- failure
 	}()
 	select {

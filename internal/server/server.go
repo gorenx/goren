@@ -6,50 +6,31 @@ import (
 	"fmt"
 	"net"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
 	"github.com/gorenx/goren/apiproxy"
-	imageapi "github.com/gorenx/goren/apiproxy/session/image"
 	"github.com/gorenx/goren/attachment/image"
 	"github.com/gorenx/goren/internal/connection"
+	"github.com/gorenx/goren/llm"
 	"github.com/gorenx/goren/llm/deepseek"
 	"github.com/gorenx/goren/llm/deepseek/anonymoususerid"
+	"github.com/gorenx/goren/llm/modelconfig"
 	"github.com/gorenx/goren/mcpclient"
 	sessionsqlite "github.com/gorenx/goren/session/persistence/sqlite"
 	cacheactor "github.com/gorenx/goren/session/projectioncache/actor"
 	cachesqlite "github.com/gorenx/goren/session/projectioncache/sqlite"
 	querysqlite "github.com/gorenx/goren/session/query/sqlite"
+	usersettings "github.com/gorenx/goren/settings"
+	settingsactor "github.com/gorenx/goren/settings/actor"
 	"github.com/gorenx/goren/systemprompt"
-	toolregistry "github.com/gorenx/goren/tools/registry"
-	"github.com/gorenx/goren/tools/tool"
+	runtimeactor "github.com/gorenx/goren/tools/runtime/actor"
 	toolactor "github.com/gorenx/goren/tools/tool/actor"
 	"github.com/gorenx/goren/web"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/log"
 )
-
-// Config contains process paths and owner-defined configuration, never secrets.
-type Config struct {
-	// Attachments is a borrowed image capability shared by admission and reads.
-	// Nil creates an owned original-image Store beside SessionDatabase.
-	// Composition closes an injected capability after Server.Close.
-	Attachments       imageapi.ImageStore
-	Address           string
-	Version           string
-	WorkingDirectory  string
-	SessionDatabase   string
-	WorkspaceDatabase string
-	QueryDatabase     string
-	CacheDatabase     string
-	CredentialsPath   string
-	Timeout           time.Duration
-	Provider          deepseek.Config
-	Prompt            systemprompt.Config
-	Tools             toolregistry.Catalog
-	Providers         tool.Providers
-	MCP               []mcpclient.Config
-}
 
 // Server owns process resources and their dependency-ordered release. It does not
 // own Agent state; Registry controls every Agent and Session lifetime.
@@ -75,21 +56,33 @@ type Server struct {
 	carrier     *connection.HTTPHost
 	cancel      context.CancelFunc
 	served      chan error
-	mcp         *mcpManager
-	mcpIdentity *goakt.GrainIdentity
+	preferences *settingsactor.Provider
+	picker      *directoryPicker
 }
 
 // New validates required process inputs without starting actors or opening files.
 func New(settings Config, platform anonymoususerid.Environment) (*Server, error) {
+	validated, err := settings.Validate(platform)
+	if err != nil {
+		return nil, err
+	}
+	return &Server{
+		settings: validated,
+		platform: platform,
+	}, nil
+}
+
+// Validate normalizes and checks configuration without creating runtime resources.
+func (settings Config) Validate(platform anonymoususerid.Environment) (Config, error) {
 	if platform == nil ||
 		settings.WorkingDirectory == "" ||
 		settings.SessionDatabase == "" ||
 		settings.WorkspaceDatabase == "" ||
 		settings.CredentialsPath == "" {
-		return nil, errors.New("server: environment, working directory and storage paths are required")
+		return Config{}, errors.New("server: environment, working directory and storage paths are required")
 	}
 	if !filepath.IsAbs(settings.WorkingDirectory) {
-		return nil, errors.New("server: working directory must be absolute")
+		return Config{}, errors.New("server: working directory must be absolute")
 	}
 	if settings.Address == "" {
 		settings.Address = "127.0.0.1:3080"
@@ -98,7 +91,7 @@ func New(settings Config, platform anonymoususerid.Environment) (*Server, error)
 		settings.Timeout = 10 * time.Second
 	}
 	if settings.Timeout < 0 {
-		return nil, errors.New("server: request timeout must be positive")
+		return Config{}, errors.New("server: request timeout must be positive")
 	}
 	if settings.QueryDatabase == "" {
 		settings.QueryDatabase = filepath.Join(filepath.Dir(settings.SessionDatabase), "query.sqlite")
@@ -106,6 +99,12 @@ func New(settings Config, platform anonymoususerid.Environment) (*Server, error)
 	if settings.CacheDatabase == "" {
 		settings.CacheDatabase = filepath.Join(filepath.Dir(settings.SessionDatabase), "projections.sqlite")
 	}
+	if err := settings.userBaseline().Validate(); err != nil {
+		return Config{}, err
+	}
+	captured := settings.userBaseline().Clone()
+	settings.Companions = captured.Companions
+	settings.Agents = captured.Agents
 	settings.Tools = settings.Tools.Clone()
 	settings.Providers = settings.Providers.Clone()
 	settings.MCP = append([]mcpclient.Config(nil), settings.MCP...)
@@ -113,18 +112,81 @@ func New(settings Config, platform anonymoususerid.Environment) (*Server, error)
 	for index, configured := range settings.MCP {
 		validated, err := configured.Validate()
 		if err != nil {
-			return nil, err
+			return Config{}, err
 		}
 		if serverNames[validated.ServerName] {
-			return nil, errors.New("server: duplicate MCP server name")
+			return Config{}, errors.New("server: duplicate MCP server name")
 		}
 		serverNames[validated.ServerName] = true
 		settings.MCP[index] = validated
 	}
-	return &Server{
-		settings: settings,
-		platform: platform,
-	}, nil
+
+	_, port, err := net.SplitHostPort(settings.Address)
+	if err != nil {
+		return Config{}, errors.New("server: invalid listen address")
+	}
+	if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+		return Config{}, errors.New("server: invalid listen port")
+	}
+	connection, err := deepseek.ResolveOptions(settings.Provider, platform)
+	if err != nil {
+		return Config{}, errors.New("server: invalid provider configuration")
+	}
+	// Freeze the resolved reference and endpoint before later construction.
+	settings.Provider.APIKeyEnv = &connection.APIKeyEnv
+	settings.Provider.BaseURL = &connection.BaseURL
+	baseline := usersettings.ProviderConfig{
+		APIKeyEnv:           settings.Provider.APIKeyEnv,
+		BaseURL:             settings.Provider.BaseURL,
+		StreamIdleTimeoutMS: settings.Provider.StreamIdleTimeoutMS,
+	}
+	if err := baseline.Validate(); err != nil {
+		return Config{}, err
+	}
+	if _, err := systemprompt.ValidateConfig(settings.Prompt); err != nil {
+		return Config{}, errors.New("server: invalid prompt configuration")
+	}
+	if settings.Models.Default.Provider == "" && settings.Models.Default.Model == "" {
+		settings.Models = DefaultModelConfig()
+	}
+	if settings.Models.Default.Provider != deepseek.ProviderRoute {
+		return Config{}, errors.New("server: default provider is not installed")
+	}
+	settings.Models.Providers = []modelconfig.Provider{
+		{
+			ID:            deepseek.ProviderRoute,
+			CredentialRef: connection.APIKeyEnv,
+		},
+	}
+	catalog, err := modelconfig.NewCatalog(settings.Models)
+	if err != nil {
+		return Config{}, errors.New("server: invalid model configuration")
+	}
+	settings.Models = catalog.Current().Definition
+	if _, err := deepseek.SerializeRequest(llm.GenerateOptions{
+		CallConfig: settings.Models.Default,
+	}, connection.Defaults); err != nil {
+		return Config{}, errors.New("server: invalid default model parameters")
+	}
+	if settings.SettingsDatabase == "" {
+		settings.SettingsDatabase = filepath.Join(filepath.Dir(settings.SessionDatabase), "settings.sqlite")
+	}
+	paths := make(map[string]bool)
+	for _, path := range []string{
+		settings.SessionDatabase,
+		settings.WorkspaceDatabase,
+		settings.QueryDatabase,
+		settings.CacheDatabase,
+		settings.CredentialsPath,
+		settings.SettingsDatabase,
+	} {
+		absolute, err := filepath.Abs(path)
+		if err != nil || paths[absolute] {
+			return Config{}, errors.New("server: storage paths must be distinct")
+		}
+		paths[absolute] = true
+	}
+	return settings, nil
 }
 
 // Start initializes API dependencies before binding the HTTP listener. Startup
@@ -151,6 +213,9 @@ func (owner *Server) Start(ctx context.Context) (failure error) {
 		}
 	}()
 	var err error
+	if err := owner.openSettings(ctx); err != nil {
+		return err
+	}
 	if err := owner.openImages(); err != nil {
 		return err
 	}
@@ -169,7 +234,7 @@ func (owner *Server) Start(ctx context.Context) (failure error) {
 		return err
 	}
 	constructors := &toolactor.Providers{}
-	owner.system, err = goakt.NewActorSystem("goren", goakt.WithPubSub(), goakt.WithLogger(log.DiscardLogger), goakt.WithExtensions(constructors))
+	owner.system, err = goakt.NewActorSystem("goren", goakt.WithPubSub(), goakt.WithLogger(log.DiscardLogger), goakt.WithExtensions(constructors, &runtimeactor.Provider{}))
 	if err != nil {
 		return err
 	}
@@ -220,7 +285,7 @@ func (owner *Server) Done() <-chan error {
 	return owner.served
 }
 
-// Close stops network admission before settling API and Agent resource owners.
+// Close settles native selection, then stops network admission before Agents.
 // Failure retains all dependencies needed to retry the incomplete stage.
 func (owner *Server) Close(ctx context.Context) error {
 	owner.lifecycle.Lock()
@@ -234,8 +299,11 @@ func (owner *Server) Close(ctx context.Context) error {
 
 func (owner *Server) closeResources(ctx context.Context) error {
 	var transportFailure error
-	if owner.mcp != nil {
-		owner.mcp.cancel()
+	if owner.picker != nil {
+		if err := owner.picker.Close(ctx); err != nil {
+			return err
+		}
+		owner.picker = nil
 	}
 	if owner.cancel != nil {
 		owner.cancel()
@@ -264,18 +332,18 @@ func (owner *Server) closeResources(ctx context.Context) error {
 		}
 		owner.api = nil
 	}
+	if owner.preferences != nil {
+		if err := owner.preferences.Close(ctx); err != nil {
+			return errors.Join(transportFailure, err)
+		}
+		owner.preferences = nil
+	}
 	if owner.agents != nil {
 		err := closeAgents(ctx, owner.system, owner.agents)
 		if err != nil {
 			return errors.Join(transportFailure, err)
 		}
 		owner.agents = nil
-	}
-	if owner.mcp != nil {
-		if err := owner.mcp.close(ctx); err != nil {
-			return err
-		}
-		owner.mcp = nil
 	}
 	if owner.workspace != nil {
 		err := owner.workspace.Shutdown(ctx)

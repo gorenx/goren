@@ -84,7 +84,8 @@ func (view *sessionReader) visibleSessionSummaries(
 		return sessionSummaryPage{}, err
 	}
 	for _, header := range stored.Headers {
-		if header.CWD == nil {
+		// Child Sessions remain navigable through their parent without a workspace.
+		if header.CWD == nil && header.ParentSession == nil {
 			continue
 		}
 		if _, live := liveIDs[header.ID]; live {
@@ -111,7 +112,8 @@ func (view *sessionReader) liveSessionSummaries(ctx context.Context) (
 	}
 	for _, conversation := range snapshots {
 		header := conversation.Header
-		if header.CWD == nil {
+		// Child Sessions remain navigable through their parent without a workspace.
+		if header.CWD == nil && header.ParentSession == nil {
 			continue
 		}
 		identifiers[header.ID] = struct{}{}

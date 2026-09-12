@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "server": {
+    "listen": "127.0.0.1:3080",
+    "requestTimeoutMs": 10000
+  },
+  "storage": {
+    "dataDirectory": "./data",
+    "sessionDatabase": "./data/sessions.sqlite",
+    "workspaceDatabase": "./data/workspaces.sqlite",
+    "queryDatabase": "./data/query.sqlite",
+    "cacheDatabase": "./data/projections.sqlite",
+    "credentialsPath": "./data/.credentials.json"
+  },
+  "settings": {
+    "database": "./data/settings.sqlite"
+  },
+  "llm": {
+    "default": {
+      "provider": "deepseek-official",
+      "model": "deepseek-v4-flash"
+    },
+    "deepseek": {
+      "apiKeyEnv": "DEEPSEEK_API_KEY",
+      "baseURL": "https://api.deepseek.com",
+      "streamIdleTimeoutMs": 300000
+    }
+  },
+  "prompt": {
+    "includeHarnessIdentity": true,
+    "includeRuntimeContext": true,
+    "persona": "请使用简体中文回答。",
+    "toolOrder": [
+      "<unlisted-tools>"
+    ]
+  },
+  "mcp": {
+    "servers": [],
+    "files": []
+  },
+  "tools": {
+    "ask_user_question": {
+      "enabled": true,
+      "visible": true
+    }
+  }
+}

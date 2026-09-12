@@ -15,7 +15,7 @@ func schema(name string, description string) llm.ToolSchema {
 	}
 }
 
-func TestRegistryKeepsSourcesAndSessionOverridesSeparate(t *testing.T) {
+func TestRegistryKeepsSourcesAndSessionAdditionsSeparate(t *testing.T) {
 	var directory toolregistry.Registry
 	hidden := false
 	err := directory.RegisterSource("local", toolregistry.Catalog{
@@ -35,7 +35,8 @@ func TestRegistryKeepsSourcesAndSessionOverridesSeparate(t *testing.T) {
 	}
 	visible := true
 	err = directory.ConfigureSession("session-1", toolregistry.Catalog{
-		Schemas: []llm.ToolSchema{schema("read", "custom read")},
+		InheritGlobal: true,
+		Schemas:       []llm.ToolSchema{schema("inspect", "session inspect")},
 		Policies: map[string]toolregistry.Policy{
 			"read": {Visible: &visible},
 		},
@@ -46,7 +47,7 @@ func TestRegistryKeepsSourcesAndSessionOverridesSeparate(t *testing.T) {
 	hidden = true
 	visible = false
 	input := directory.Read("session-1")
-	if len(input.Global.Schemas) != 2 || input.Global.Schemas[0].Description != "global read" || input.Custom.Schemas[0].Description != "custom read" {
+	if len(input.Global.Schemas) != 2 || input.Global.Schemas[0].Description != "global read" || input.Custom.Schemas[0].Description != "session inspect" {
 		t.Fatalf("Registry merged source facts: %+v", input)
 	}
 	if *input.Global.Policies["read"].Visible || !*input.Custom.Policies["read"].Visible {
@@ -94,5 +95,48 @@ func TestRegistryRejectsSourceConflictsAtomicallyAndVersionsEachSchema(t *testin
 	entries := directory.Read("").Global.Schemas
 	if entries[0].Version != 2 || entries[1].Version != 1 {
 		t.Fatalf("versions=%+v", entries)
+	}
+}
+
+func TestRegistryRejectsSessionSchemaConflictsInEitherRegistrationOrder(t *testing.T) {
+	for _, first := range []string{"source", "session"} {
+		t.Run(first, func(t *testing.T) {
+			var directory toolregistry.Registry
+			global := toolregistry.Catalog{
+				Schemas: []llm.ToolSchema{schema("read", "global")},
+			}
+			local := toolregistry.Catalog{
+				InheritGlobal: true,
+				Schemas:       []llm.ToolSchema{schema("read", "session")},
+				Policies: map[string]toolregistry.Policy{
+					"read": {
+						Enabled: new(false),
+					},
+				},
+			}
+			if first == "source" {
+				if err := directory.RegisterSource("global", global); err != nil {
+					t.Fatal(err)
+				}
+				if err := directory.ConfigureSession("parent", local); err == nil {
+					t.Fatal("Session schema shadowed global schema")
+				}
+				captured := directory.Read("parent")
+				if len(captured.Custom.Schemas) != 0 || captured.Global.Schemas[0].Description != "global" {
+					t.Fatal("rejected configuration changed existing state")
+				}
+			} else {
+				if err := directory.ConfigureSession("parent", local); err != nil {
+					t.Fatal(err)
+				}
+				if err := directory.RegisterSource("global", global); err == nil {
+					t.Fatal("late global schema shadowed Session schema")
+				}
+				captured := directory.Read("parent")
+				if len(captured.Global.Schemas) != 0 || captured.Custom.Schemas[0].Description != "session" {
+					t.Fatal("rejected registration changed existing state")
+				}
+			}
+		})
 	}
 }

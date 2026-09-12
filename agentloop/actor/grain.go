@@ -30,9 +30,9 @@ type Grain struct {
 	chunk             agentloop.ChunkReceiver
 	stream            agentloop.StreamReceiver
 	modelCancellation *completeCancel
-	// calls is a set keyed by model tool-call ID; an empty struct marks a call
-	// whose cancellation and release are still owed to Tool Runtime.
-	calls map[string]struct{}
+	// calls retains transport progress until Tool Runtime confirms release.
+	// Only active calls are cancellation targets; releasing calls remain busy.
+	calls map[string]toolCallPhase
 	// cancellations maps a capability request ID to its target and cancellation
 	// message, removed only when that request delivers its final response.
 	cancellations  map[string]cancellationRequest

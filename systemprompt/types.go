@@ -21,7 +21,10 @@ const (
 	harnessIdentityOrder = -100
 )
 
-// Config is the owner-defined typed System Prompt configuration.
+// Config is the owner-defined, serializable System Prompt configuration.
+// It controls built-in sections, runtime-context suppression and tool order.
+// Custom PromptSection and PromptContext definitions use PromptRegistry;
+// their TextProvider implementations are Go capabilities, not config values.
 type Config struct {
 	IncludeHarnessIdentity *bool    `json:"includeHarnessIdentity,omitempty"`
 	IncludeRuntimeContext  *bool    `json:"includeRuntimeContext,omitempty"`
@@ -38,9 +41,12 @@ type ValidatedConfig struct {
 	toolOrder              []string
 }
 
-// AssembleContext contains business data available while one prompt is
-// assembled. A fixed Snapshot selects definitions; mutable Session owners are
-// not exposed to text or variable providers.
+// AssembleContext is the per-call input passed to text and variable providers.
+// It currently contains the consumed tool-definition view, supplied by Runtime;
+// it is neither a registered PromptContext nor an assembled context entry.
+// The separate context.Context argument controls cancellation and deadlines.
+// A Snapshot selects definitions; mutable Session owners and user-configurable
+// tool registrations are not exposed through this input.
 type AssembleContext struct {
 	Tools ToolDefinitions
 }
@@ -59,28 +65,49 @@ func (content StaticText) ResolveText(context.Context, AssembleContext) (string,
 	return string(content), nil
 }
 
-// PromptSection is one named, ordered system-prompt entry.
+// PromptSection defines an instruction entry registered with AddSection.
+// Text may be StaticText or a provider evaluated on each assembly. Definitions
+// are merged by Name across layers, with a child shadowing its inherited entry,
+// then sorted by ascending Order. Section and context names are independent.
+// Duplicate names within the same layer are rejected.
+// Assembly produces AssembledSection values; RenderPrompt renders their text.
 type PromptSection struct {
-	Name     string
-	Order    float64
-	Text     TextProvider
+	Name  string
+	Order float64
+	Text  TextProvider
+	// Complete makes this entry the only section in a successful assembly.
+	// Multiple active complete entries fail. Other section providers still run
+	// and may fail; contexts, variables and tools are not replaced.
 	Complete bool
 }
 
-// PromptContext is one named, ordered dynamic runtime-context entry.
+// PromptContext defines a runtime fact entry registered with AddContext,
+// for example a tool summary. Like PromptSection, it accepts static or computed
+// text, uses child-by-name overrides and is sorted by ascending Order.
+// Its output goes to PromptAssembly.Contexts and RenderContextSections, not
+// RenderPrompt. A runtime-context suppressor skips these providers entirely.
+// AgentLoop owns committing the rendered context to the Session conversation.
 type PromptContext struct {
 	Name  string
 	Order float64
 	Text  TextProvider
 }
 
-// AssembledSection is one prompt section after its text provider resolves.
+// AssembledSection is the output of resolving a PromptSection's TextProvider.
+// Order is represented by its position in PromptAssembly.Sections; the provider
+// and Complete flag are no longer needed. Text may still contain {{name}}
+// references: RenderPrompt interpolates them using the assembly's variables.
+// This is an assembly result, not a definition to register or user settings.
 type AssembledSection struct {
 	Name string `json:"name"`
 	Text string `json:"text"`
 }
 
-// AssembledContext is one runtime-context entry after resolution.
+// AssembledContext is the output of resolving a PromptContext's TextProvider.
+// Order is represented by its position in PromptAssembly.Contexts. Text may
+// still contain {{name}} references, resolved later by RenderContextSections.
+// It is neither the AssembleContext input nor an already-committed Session
+// message; the caller owns rendering and committing the resulting content.
 type AssembledContext struct {
 	Name string `json:"name"`
 	Text string `json:"text"`

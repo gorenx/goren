@@ -32,6 +32,7 @@ go.work.sum
 /*.sqlite-*
 /*.sqlite
 /.credentials.json
+/.cache/
 
 # Editor/IDE
 .idea/

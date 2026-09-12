@@ -26,7 +26,7 @@ func (current *Call) Dispatch() error {
 	if current.failure != nil {
 		return current.failure
 	}
-	dispatched, err := current.scheduler.dispatch(current.preparation.Execution)
+	dispatched, err := current.dispatchBody()
 	if err != nil {
 		var delivery *DeliveryError
 		if errors.As(err, &delivery) {
@@ -53,11 +53,11 @@ func (current *Call) Finalize() error {
 		if current.dispatch == nil {
 			return errors.New("tools: body has not returned")
 		}
-		result, err = current.scheduler.finalize(current.preparation.Execution, current.dispatch.Result)
+		result, err = current.finalize(current.dispatch.Result)
 	case tools.ScheduledPostResult:
-		result, err = current.scheduler.finalize(current.preparation.Execution, current.preparation.Result)
+		result, err = current.finalize(current.preparation.Result)
 	case tools.ScheduledFinalResult:
-		result = current.scheduler.finish(current.preparation.Execution, current.preparation.Result)
+		result = current.finish(current.preparation.Result)
 	default:
 		return errors.New("tools: approval is not settled")
 	}

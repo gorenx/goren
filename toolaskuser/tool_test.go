@@ -182,13 +182,13 @@ func TestExecutionPreservesStructuredQuestionError(t *testing.T) {
 
 func executeQuestion(t *testing.T, definition toolscore.ToolDefinition, ctx context.Context, input toolscore.ToolExecutionInput) toolscore.ToolExecutionResult {
 	t.Helper()
-	coordinator, err := execution.NewScheduler([]toolscore.Descriptor{definition.Describe()}, execution.Policies{}, questionBody{
+	coordinator, err := execution.NewScheduler([]toolscore.Descriptor{definition.Describe()}, questionBody{
 		handler: definition.Executor,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	current, err := coordinator.PrepareCall(ctx, input)
+	current, err := coordinator.PrepareCall(ctx, input, execution.Policies{})
 	if err != nil {
 		t.Fatal(err)
 	}

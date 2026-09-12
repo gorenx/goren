@@ -7,6 +7,8 @@ import (
 // HeaderDraft records the first request of an activation or a changed effective
 // header. A nil draft means the existing header already describes this request.
 // first remains true until the returned draft has committed successfully.
+// This function does not emit one header per Turn or record
+// Settings revisions whose effective request parameters remain unchanged.
 func HeaderDraft(previous *session.EpochHeader, effective session.EpochHeader, first bool) (*session.EventDraft, error) {
 	canonical := session.CanonicalEpochHeader(effective)
 	reason := session.RequestHeaderChange

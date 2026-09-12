@@ -61,16 +61,12 @@ var rpcErrorDetailRules = map[RPCErrorCode]errorDetailRules{
 	ErrorSubagentNotResumable:        {requiredStrings: []string{"childSessionId"}},
 	ErrorSubagentUnauthorized:        {requiredStrings: []string{"childSessionId"}},
 	ErrorSubagentDeliveryUnavailable: {requiredStrings: []string{"childSessionId"}},
-	ErrorBoundDefinitionExists:       {requiredStrings: []string{"name"}},
-	ErrorBoundDefinitionNotFound:     {requiredStrings: []string{"name"}},
-	ErrorBoundDefinitionConflict: {
-		requiredStrings: []string{"name"},
-		requiredNumbers: []string{"expectedRevision"},
-	},
-	ErrorBoundDefinitionRejected: {
-		requiredStrings: []string{"name", "reason"},
-	},
-	ErrorInternal: {},
+	ErrorCompanionInvalid:            {requiredStrings: []string{"parentSessionId", "name"}},
+	ErrorCompanionForbidden:          {requiredStrings: []string{"parentSessionId"}},
+	ErrorCompanionNotFound:           {requiredStrings: []string{"parentSessionId", "name"}},
+	ErrorCompanionConflict:           {requiredStrings: []string{"parentSessionId", "name"}},
+	ErrorCompanionUnavailable:        {requiredStrings: []string{"parentSessionId", "name"}},
+	ErrorInternal:                    {},
 }
 
 func (rules errorDetailRules) valid(raw json.RawMessage) bool {

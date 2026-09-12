@@ -2,14 +2,19 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"slices"
 
 	"github.com/gorenx/goren/approval"
 	approvalactor "github.com/gorenx/goren/approval/actor"
 	approvaltool "github.com/gorenx/goren/approval/tool"
 	"github.com/gorenx/goren/llm"
+	companionactor "github.com/gorenx/goren/subagent/companion/actor"
+	"github.com/gorenx/goren/subagent/tools/control"
+	"github.com/gorenx/goren/subagent/tools/report"
 	"github.com/gorenx/goren/toolaskuser"
 	toolregistry "github.com/gorenx/goren/tools/registry"
+	runtimeactor "github.com/gorenx/goren/tools/runtime/actor"
 	"github.com/gorenx/goren/tools/tool"
 	toolactor "github.com/gorenx/goren/tools/tool/actor"
 	"github.com/gorenx/goren/userquestions"
@@ -21,7 +26,12 @@ import (
 // and policies. Session overrides are still merged exclusively by Tool Runtime.
 func defaultTools(custom toolregistry.Catalog) toolregistry.Catalog {
 	entries := custom.Clone()
-	for _, definition := range []llm.ToolSchema{toolaskuser.Schema(), approvaltool.Schema()} {
+	for _, definition := range []llm.ToolSchema{
+		toolaskuser.Schema(),
+		approvaltool.Schema(),
+		control.ListSchema(),
+		control.MessageSchema(),
+	} {
 		found := slices.ContainsFunc(entries.Schemas, func(existing llm.ToolSchema) bool {
 			return existing.Name == definition.Name
 		})
@@ -49,6 +59,9 @@ func (owner *Server) initializeToolProviders(ctx context.Context, sessions *goak
 		return err
 	}
 	questions := userquestions.New(owner.api.Interactions(), authority)
+	if err := runtimeactor.Install(system, questions); err != nil {
+		return err
+	}
 	asking, err := toolaskuser.NewProvider(questions)
 	if err != nil {
 		return err
@@ -65,16 +78,38 @@ func (owner *Server) initializeToolProviders(ctx context.Context, sessions *goak
 	if err != nil {
 		return err
 	}
-	entries := tool.Providers{
-		toolaskuser.Name:     asking,
-		approval.ServiceName: permissions,
-	}
-	for name, source := range owner.settings.Providers {
-		entries[name] = source
-	}
-	sources, err := owner.initializeMCP(ctx, questions)
+	reader, err := companionactor.NewReader(system, owner.agents)
 	if err != nil {
 		return err
 	}
-	return constructors.Install(entries, sources...)
+	listing, err := control.NewListProvider(reader)
+	if err != nil {
+		return err
+	}
+	messenger, err := companionactor.NewMessenger(system, owner.agents)
+	if err != nil {
+		return err
+	}
+	messaging, err := control.NewMessageProvider(messenger)
+	if err != nil {
+		return err
+	}
+	reporting, err := report.NewProvider(messenger, report.Quiet)
+	if err != nil {
+		return err
+	}
+	entries := tool.Providers{
+		toolaskuser.Name:             asking,
+		approval.ServiceName:         permissions,
+		control.ListSchema().Name:    listing,
+		control.MessageSchema().Name: messaging,
+		report.Schema().Name:         reporting,
+	}
+	for name, source := range owner.settings.Providers {
+		if _, reserved := entries[name]; reserved {
+			return fmt.Errorf("server: tool provider %q is already installed", name)
+		}
+		entries[name] = source
+	}
+	return constructors.Install(entries)
 }

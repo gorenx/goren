@@ -6,7 +6,9 @@ import (
 	"sync/atomic"
 
 	commandapi "github.com/gorenx/goren/apiproxy/commands"
+	companionapi "github.com/gorenx/goren/apiproxy/companion"
 	credentialsapi "github.com/gorenx/goren/apiproxy/credentials"
+	"github.com/gorenx/goren/apiproxy/directorypicker"
 	"github.com/gorenx/goren/apiproxy/interaction"
 	llmapi "github.com/gorenx/goren/apiproxy/llm"
 	mcpapi "github.com/gorenx/goren/apiproxy/mcp"
@@ -17,20 +19,23 @@ import (
 	settingsapi "github.com/gorenx/goren/apiproxy/settings"
 	"github.com/gorenx/goren/apiproxy/stream"
 	workspaceapi "github.com/gorenx/goren/apiproxy/workspace"
+	usersettings "github.com/gorenx/goren/settings"
 )
 
 // Dependencies supplies domain capabilities; composition owns their lifecycle.
 type Dependencies struct {
-	Sessions    sessionapi.Dependencies
-	Search      sessionapi.Search
-	Snapshots   sessionevents.Snapshots
-	Workspaces  workspaceapi.Directory
-	Commands    commandapi.Resolver
-	Credentials credentialsapi.Provider
-	Description HostDescriptionProvider
-	Presets     presetapi.Roster
-	Settings    settingsapi.Describer
-	MCP         mcpapi.Directory
+	DirectoryPicker directorypicker.Picker
+	Sessions        sessionapi.Dependencies
+	Search          sessionapi.Search
+	Snapshots       sessionevents.Snapshots
+	Workspaces      workspaceapi.Directory
+	Commands        commandapi.Resolver
+	Credentials     credentialsapi.Provider
+	Description     HostDescriptionProvider
+	Presets         presetapi.Roster
+	Settings        usersettings.Settings
+	MCP             mcpapi.Directory
+	Companions      companionapi.Manager
 }
 
 // Options contains API behavior and transport buffering settings.
@@ -98,6 +103,9 @@ func NewServer(ctx context.Context, ports Dependencies, settings Options) (*Serv
 		return nil, err
 	}
 	methods := rpc.NewCatalog()
+	if err := directorypicker.Register(methods, ports.DirectoryPicker); err != nil {
+		return nil, err
+	}
 	if err := mcpapi.Register(methods, ports.MCP); err != nil {
 		return nil, err
 	}
@@ -126,6 +134,11 @@ func NewServer(ctx context.Context, ports Dependencies, settings Options) (*Serv
 	}
 	if err := settingsapi.Register(methods, settingsapi.NewGateway(ports.Settings)); err != nil {
 		return nil, err
+	}
+	if ports.Companions != nil {
+		if err := companionapi.Register(methods, ports.Companions); err != nil {
+			return nil, err
+		}
 	}
 	interactions, err := interaction.NewGateway(interaction.Dependencies{
 		Methods: methods,

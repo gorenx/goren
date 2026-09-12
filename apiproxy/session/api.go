@@ -130,7 +130,8 @@ type ModelSelection struct {
 
 // ModelsValue is a fresh session-scoped model directory.
 type ModelsValue struct {
-	Current  ModelSelection               `json:"current"`
+	// Current is nil when the Session has no running Agent; querying never starts one.
+	Current  *ModelSelection              `json:"current"`
 	Routable bool                         `json:"routable"`
 	Groups   []llmapi.ModelProviderGroup  `json:"groups"`
 	Failures []llmapi.ModelCatalogFailure `json:"failures"`
