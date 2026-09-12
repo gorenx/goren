@@ -151,6 +151,12 @@ func (owner *Creator) selectTools(
 			return entry.Name == name
 		})
 		if index < 0 {
+			source = parentTools.Value.Custom
+			index = slices.IndexFunc(source.Schemas, func(entry llm.ToolSchema) bool {
+				return entry.Name == name
+			})
+		}
+		if index < 0 {
 			source = available.Value.Global
 			index = slices.IndexFunc(source.Schemas, func(entry llm.ToolSchema) bool {
 				return entry.Name == name

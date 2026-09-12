@@ -431,3 +431,63 @@ func TestCreatorInheritsCurrentParentConfigurationForDefaultCompanion(t *testing
 		t.Fatalf("inheritance copied unapplied Registry input instead of the parent Runtime: %+v", adopted.Tools)
 	}
 }
+
+func TestCreatorIncludesParentSessionSchemaAdditions(t *testing.T) {
+	fixture, _, _ := messagingFixture(t, func(current *stewardship) tool.Providers {
+		prepareCreatorModels(t, current)
+		return nil
+	})
+	fixture.input.Tools = &toolregistry.Catalog{
+		InheritGlobal: true,
+		Schemas: []llm.ToolSchema{
+			{
+				Name:        "session_tool",
+				Description: "parent Session addition",
+				Parameters:  json.RawMessage(`{"type":"object"}`),
+			},
+		},
+		Policies: map[string]toolregistry.Policy{
+			"session_tool": {
+				Enabled: new(false),
+			},
+		},
+	}
+	starter := &Creator{
+		System:   fixture.system,
+		Registry: fixture.authority,
+		Tools:    fixture.input.ToolsRegistry,
+		Model:    fixture.input.ModelConfig,
+		Settings: fixture.creator.settings,
+		Storage:  fixture.creator.storage,
+	}
+	installer, sender, parent := installParent(t, fixture, fixture.authority, starter)
+	awaitInstallation(t, fixture, installer, parent.Creation, Ready)
+	resolved, err := starter.Resolve(t.Context(), parent.Creation, companions.Config{
+		Inherit: companions.Inheritance{
+			Tools: companions.InheritAllTools,
+		},
+	}, settings.Values{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sender.Create(t.Context(), Create{
+		Name:    "reviewer",
+		Enabled: true,
+		Initial: resolved,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	child := awaitPhase(t, sender, "reviewer", Ready)
+	selected := request[catalogactor.Configuration](t, fixture.system, fixture.input.ToolsRegistry, catalogactor.ReadConfiguration{
+		SessionID: child.Companion.ChildSessionID,
+	})
+	index := slices.IndexFunc(selected.Value.Global.Schemas, func(entry llm.ToolSchema) bool {
+		return entry.Name == "session_tool"
+	})
+	if index < 0 || selected.Value.Global.Schemas[index].Description != "parent Session addition" {
+		t.Fatal("child lost the inherited Session schema")
+	}
+	if enabled := selected.Value.Global.Policies["session_tool"].Enabled; enabled == nil || *enabled {
+		t.Fatal("child lost the inherited disabled policy")
+	}
+}
