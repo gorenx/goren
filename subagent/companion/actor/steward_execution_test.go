@@ -20,6 +20,7 @@ import (
 	llmactor "github.com/gorenx/goren/llm/actor"
 	"github.com/gorenx/goren/llm/modelconfig"
 	"github.com/gorenx/goren/session"
+	"github.com/gorenx/goren/settings"
 	"github.com/gorenx/goren/tools/tool"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/reentrancy"
@@ -281,11 +282,23 @@ func TestCompanionModelDelegationAndReport(t *testing.T) {
 				current.input.ModelRouter = pool
 				return nil
 			})
-			endpoint, sender, input := installParent(t, fixture, fixture.authority)
+			endpoint, sender, input := installParent(t, fixture, fixture.authority, &Creator{
+				System:   fixture.system,
+				Registry: fixture.authority,
+				Tools:    fixture.input.ToolsRegistry,
+				Settings: fixture.creator.settings,
+				Storage:  fixture.creator.storage,
+			})
 			awaitInstallation(t, fixture, endpoint, input.Creation, Ready)
 			if _, err := sender.Create(t.Context(), Create{
 				Name:    "reviewer",
 				Enabled: true,
+				Initial: settings.Values{
+					Model: agent.Options{
+						Model:     "companion-review",
+						MaxTokens: new(768),
+					},
+				},
 			}); err != nil {
 				t.Fatal(err)
 			}
@@ -365,6 +378,9 @@ func TestCompanionModelDelegationAndReport(t *testing.T) {
 			backend.mu.Unlock()
 			if len(parentCalls) != 4 || len(childCalls) != 2 {
 				t.Fatalf("unexpected model calls: parent=%d child=%d", len(parentCalls), len(childCalls))
+			}
+			if parentCalls[0].Model != "review" || childCalls[0].Model != "companion-review" || childCalls[0].MaxTokens == nil || *childCalls[0].MaxTokens != 768 {
+				t.Fatal("shared provider did not preserve independent Agent model settings")
 			}
 			task, err := modelSource(childCalls[0].Messages, "coordinator", "review the current change")
 			if err != nil {

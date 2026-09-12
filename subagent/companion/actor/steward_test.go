@@ -26,6 +26,7 @@ import (
 	"github.com/gorenx/goren/tools"
 	toolregistry "github.com/gorenx/goren/tools/registry"
 	toolactor "github.com/gorenx/goren/tools/registry/actor"
+	runtimeactor "github.com/gorenx/goren/tools/runtime/actor"
 	"github.com/gorenx/goren/tools/tool"
 	implementationactor "github.com/gorenx/goren/tools/tool/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
@@ -182,7 +183,7 @@ func newStewardship(t *testing.T, prepare ...func(*stewardship) tool.Providers) 
 		}
 	})
 	constructors := &implementationactor.Providers{}
-	system, err := goakt.NewActorSystem("steward", goakt.WithLogger(log.DiscardLogger), goakt.WithPubSub(), goakt.WithExtensions(constructors))
+	system, err := goakt.NewActorSystem("steward", goakt.WithLogger(log.DiscardLogger), goakt.WithPubSub(), goakt.WithExtensions(constructors, &runtimeactor.Provider{}))
 	if err != nil {
 		t.Fatal(err)
 	}

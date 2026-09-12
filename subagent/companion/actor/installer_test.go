@@ -12,12 +12,16 @@ import (
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
 
-func installParent(t *testing.T, fixture *stewardship, authority *goakt.GrainIdentity) (*goakt.GrainIdentity, *Client, agentregistry.CreateAgent) {
+func installParent(t *testing.T, fixture *stewardship, authority *goakt.GrainIdentity, creators ...ChildCreator) (*goakt.GrainIdentity, *Client, agentregistry.CreateAgent) {
 	t.Helper()
+	var starter ChildCreator = fixture.creator
+	if len(creators) != 0 {
+		starter = creators[0]
+	}
 	endpoint, err := Register(t.Context(), fixture.system, Dependencies{
 		Registry: authority,
 		Settings: fixture.creator.settings,
-		Creator:  fixture.creator,
+		Creator:  starter,
 	})
 	if err != nil {
 		t.Fatal(err)
