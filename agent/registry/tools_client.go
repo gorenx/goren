@@ -5,21 +5,21 @@ import (
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
-// toolsClient adapts the Registry component protocol to the Tools-owned Client.
+// toolsClient adapts the Registry component protocol to the Tools Supervisor.
 // It retains the initialization command and the activation admitted by ClaimTools.
 type toolsClient struct {
 	command    runtimeactor.InitializeRuntime
-	client     *runtimeactor.Client
+	supervisor *runtimeactor.Supervisor
 	instanceID string
 }
 
 func (endpoint *toolsClient) Runtime() *goakt.GrainIdentity {
-	return endpoint.client.Runtime()
+	return endpoint.supervisor.Runtime()
 }
 
 func (endpoint *toolsClient) Initialize(gc *goakt.GrainContext, reply chan<- componentResult) {
-	sender, err := runtimeactor.NewClient(gc.Context(), gc.ActorSystem(), endpoint.command)
-	endpoint.client = sender
+	sender, err := runtimeactor.NewSupervisor(gc.Context(), gc.ActorSystem(), endpoint.command)
+	endpoint.supervisor = sender
 	if err != nil {
 		reply <- componentResult{
 			err: err,
@@ -45,7 +45,7 @@ func (endpoint *toolsClient) Initialize(gc *goakt.GrainContext, reply chan<- com
 }
 
 func (endpoint *toolsClient) Close(gc *goakt.GrainContext, reply chan<- error) {
-	completed := endpoint.client.Close(gc, endpoint.instanceID)
+	completed := endpoint.supervisor.Close(gc, endpoint.instanceID)
 	err := gc.PipeToSelf(func() (any, error) {
 		return clientReply[struct{}]{
 			err: <-completed,

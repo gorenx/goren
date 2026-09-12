@@ -49,10 +49,10 @@ func (owner *Runtime) receiveConfiguration(gc *goakt.GrainContext) bool {
 		owner.request = current
 		owner.changed = false
 		business := owner.collection
-		directory := &Catalog{
-			system:  gc.ActorSystem(),
-			target:  owner.registry,
-			timeout: owner.replyTimeout,
+		directory, err := catalogactor.NewClient(gc.ActorSystem(), owner.registry, owner.replyTimeout)
+		if err != nil {
+			owner.finish(current, err)
+			return true
 		}
 		instances := owner.newToolClient(gc)
 		peers := owner.connections

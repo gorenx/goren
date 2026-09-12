@@ -18,7 +18,7 @@ import (
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
 
-func TestClientOwnsRuntimeStartupAndRetryableClosure(t *testing.T) {
+func TestSupervisorOwnsRuntimeStartupAndRetryableClosure(t *testing.T) {
 	provider := &source{}
 	system, registry, _ := startCatalog(t, true, tool.Providers{
 		toolaskuser.Name: provider,
@@ -30,7 +30,7 @@ func TestClientOwnsRuntimeStartupAndRetryableClosure(t *testing.T) {
 	selected := toolregistry.Catalog{
 		Schemas: []llm.ToolSchema{toolaskuser.Schema()},
 	}
-	sender, err := runtimeactor.NewClient(t.Context(), system, runtimeactor.InitializeRuntime{
+	sender, err := runtimeactor.NewSupervisor(t.Context(), system, runtimeactor.InitializeRuntime{
 		AgentID:    "agent",
 		CreationID: "creation",
 		Authority:  authority,
@@ -44,7 +44,7 @@ func TestClientOwnsRuntimeStartupAndRetryableClosure(t *testing.T) {
 	// Construction freezes input but does not create implementations.
 	selected.Schemas[0].Name = "mutated"
 	if provider.opens.Load() != 0 {
-		t.Fatal("Client construction opened tools")
+		t.Fatal("Supervisor construction opened tools")
 	}
 	if err := startClient(t, system, sender, t.Context()); err != nil {
 		t.Fatal(err)
@@ -86,13 +86,13 @@ func TestClientOwnsRuntimeStartupAndRetryableClosure(t *testing.T) {
 		t.Fatal("closed tool remains callable")
 	}
 	if err := startClient(t, system, sender, t.Context()); err == nil {
-		t.Fatal("closed Client reopened its runtime")
+		t.Fatal("closed Supervisor reopened its runtime")
 	}
 }
 
-func TestClientClosesUnstartedRuntimeWithoutClaim(t *testing.T) {
+func TestSupervisorClosesUnstartedRuntimeWithoutClaim(t *testing.T) {
 	system, registry, _ := startCatalog(t, true, nil)
-	sender, err := runtimeactor.NewClient(t.Context(), system, runtimeactor.InitializeRuntime{
+	sender, err := runtimeactor.NewSupervisor(t.Context(), system, runtimeactor.InitializeRuntime{
 		AgentID:    "unstarted",
 		CreationID: "creation",
 		Registry:   registry,
@@ -110,15 +110,15 @@ func TestClientClosesUnstartedRuntimeWithoutClaim(t *testing.T) {
 }
 
 // clientCaller supplies the same live GrainContext as the production Registry.
-// It owns no Runtime lifecycle decisions; those stay in the real Client.
+// It owns no Runtime lifecycle decisions; those stay in the real Supervisor.
 type clientCaller struct{}
 
 type startRequest struct {
-	sender *runtimeactor.Client
+	sender *runtimeactor.Supervisor
 }
 
 type closeRequest struct {
-	sender     *runtimeactor.Client
+	sender     *runtimeactor.Supervisor
 	instanceID string
 }
 
@@ -164,14 +164,14 @@ func (*clientCaller) OnReceive(gc *goakt.GrainContext) {
 	}
 }
 
-func startClient(t *testing.T, system goakt.ActorSystem, sender *runtimeactor.Client, ctx context.Context) error {
+func startClient(t *testing.T, system goakt.ActorSystem, sender *runtimeactor.Supervisor, ctx context.Context) error {
 	t.Helper()
 	return callClient(t, system, ctx, startRequest{
 		sender: sender,
 	})
 }
 
-func closeClient(t *testing.T, system goakt.ActorSystem, sender *runtimeactor.Client, ctx context.Context, instanceID string) error {
+func closeClient(t *testing.T, system goakt.ActorSystem, sender *runtimeactor.Supervisor, ctx context.Context, instanceID string) error {
 	t.Helper()
 	return callClient(t, system, ctx, closeRequest{
 		sender:     sender,
@@ -202,7 +202,7 @@ func callClient(t *testing.T, system goakt.ActorSystem, ctx context.Context, inp
 	return result.Err
 }
 
-func TestClientInitializationDoesNotDependOnTargetActivationOptions(t *testing.T) {
+func TestSupervisorInitializationDoesNotDependOnTargetActivationOptions(t *testing.T) {
 	for _, scenario := range []string{"preactivated", "reactivated"} {
 		t.Run(scenario, func(t *testing.T) {
 			provider := &source{}
@@ -210,7 +210,7 @@ func TestClientInitializationDoesNotDependOnTargetActivationOptions(t *testing.T
 				toolaskuser.Name: provider,
 			})
 			// Deliberately omit reentrancy. Another caller may obtain the route
-			// before the Client, or a delayed message may reactivate it.
+			// before the Supervisor, or a delayed message may reactivate it.
 			address, err := goakt.GrainOf[*runtimeactor.Runtime](t.Context(), system,
 				runtimeactor.RuntimeName("agent"), goakt.WithLongLivedGrain())
 			if err != nil {
@@ -247,7 +247,7 @@ func TestClientInitializationDoesNotDependOnTargetActivationOptions(t *testing.T
 			if err != nil {
 				t.Fatal(err)
 			}
-			sender, err := runtimeactor.NewClient(t.Context(), system, runtimeactor.InitializeRuntime{
+			sender, err := runtimeactor.NewSupervisor(t.Context(), system, runtimeactor.InitializeRuntime{
 				AgentID:    "agent",
 				CreationID: "current",
 				Authority:  authority,

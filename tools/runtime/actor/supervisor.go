@@ -17,10 +17,10 @@ const (
 	runtimeStopped
 )
 
-// Client owns Runtime and Watcher lifecycle operations for one Agent creation.
+// Supervisor owns the tool Runtime and configuration Watcher for one Agent creation.
 // The caller serializes Start and Close and retains resource responsibility until
 // Close succeeds. Registry admission and execution scheduling remain external.
-type Client struct {
+type Supervisor struct {
 	system  goakt.ActorSystem
 	address *goakt.GrainIdentity
 	command InitializeRuntime
@@ -28,11 +28,11 @@ type Client struct {
 	stage   releaseStage
 }
 
-// NewClient obtains a framework route and freezes the initialization command without
-// acquiring tool implementations. A returned Client must be closed after failure.
-func NewClient(ctx context.Context, system goakt.ActorSystem, command InitializeRuntime) (*Client, error) {
+// NewSupervisor obtains a framework route and freezes the initialization command without
+// acquiring tool implementations. A returned Supervisor must be closed after failure.
+func NewSupervisor(ctx context.Context, system goakt.ActorSystem, command InitializeRuntime) (*Supervisor, error) {
 	if ctx == nil || system == nil || command.AgentID == "" || command.CreationID == "" {
-		return nil, errors.New("tools: Client requires context, ActorSystem and Agent creation")
+		return nil, errors.New("tools: Supervisor requires context, ActorSystem and Agent creation")
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -48,7 +48,7 @@ func NewClient(ctx context.Context, system goakt.ActorSystem, command Initialize
 		goakt.WithLongLivedGrain(),
 		goakt.WithGrainReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))),
 	)
-	return &Client{
+	return &Supervisor{
 		system:  system,
 		address: address,
 		command: command,
@@ -56,7 +56,7 @@ func NewClient(ctx context.Context, system goakt.ActorSystem, command Initialize
 }
 
 // Runtime returns the fixed route used by Registry admission and Agent consumers.
-func (sender *Client) Runtime() *goakt.GrainIdentity {
+func (sender *Supervisor) Runtime() *goakt.GrainIdentity {
 	if sender == nil {
 		return nil
 	}
@@ -65,10 +65,10 @@ func (sender *Client) Runtime() *goakt.GrainIdentity {
 
 // Start initializes tools through an async request from the caller's current turn.
 // The caller awaits one result before issuing another lifecycle operation.
-func (sender *Client) Start(gc *goakt.GrainContext) <-chan error {
+func (sender *Supervisor) Start(gc *goakt.GrainContext) <-chan error {
 	reply := make(chan error, 1)
 	if sender == nil || gc == nil || sender.address == nil || sender.stage != runtimeRetained {
-		reply <- errors.New("tools: Client cannot start this runtime")
+		reply <- errors.New("tools: Supervisor cannot start this runtime")
 		return reply
 	}
 	ctx := context.WithoutCancel(gc.Context())
@@ -97,7 +97,7 @@ func (sender *Client) Start(gc *goakt.GrainContext) <-chan error {
 // Close stops observation, requests tool release asynchronously, then deactivates
 // the original Runtime. An empty instanceID means no activation was authorized.
 // The caller freezes admission and awaits one result before retrying.
-func (sender *Client) Close(gc *goakt.GrainContext, instanceID string) <-chan error {
+func (sender *Supervisor) Close(gc *goakt.GrainContext, instanceID string) <-chan error {
 	reply := make(chan error, 1)
 	if sender == nil || gc == nil || sender.address == nil {
 		reply <- errors.New("tools: runtime route is unconfirmed")
@@ -138,7 +138,7 @@ func (sender *Client) Close(gc *goakt.GrainContext, instanceID string) <-chan er
 	return reply
 }
 
-func (sender *Client) stop(ctx context.Context) error {
+func (sender *Supervisor) stop(ctx context.Context) error {
 	if err := sender.system.TellGrain(ctx, sender.address, new(goakt.PoisonPill)); err != nil {
 		return err
 	}
@@ -146,7 +146,7 @@ func (sender *Client) stop(ctx context.Context) error {
 	return nil
 }
 
-func (sender *Client) request(gc *goakt.GrainContext, command any, receive func(error)) {
+func (sender *Supervisor) request(gc *goakt.GrainContext, command any, receive func(error)) {
 	gc.RequestGrain(sender.address, command,
 		goakt.WithRequestTimeout(0),
 		goakt.WithReentrancyMode(reentrancy.AllowAll),

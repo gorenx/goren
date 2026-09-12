@@ -131,7 +131,7 @@ func serveMCP(t *testing.T, result string) (*mcpServer, mcpclient.Config) {
 	}
 }
 
-func newMCPRuntime(t *testing.T, system goakt.ActorSystem, registry *goakt.GrainIdentity, identifier session.SessionID, selection *toolregistry.Catalog, definitions []mcpclient.Config) (*runtimeactor.Client, *goakt.GrainIdentity) {
+func newMCPRuntime(t *testing.T, system goakt.ActorSystem, registry *goakt.GrainIdentity, identifier session.SessionID, selection *toolregistry.Catalog, definitions []mcpclient.Config) (*runtimeactor.Supervisor, *goakt.GrainIdentity) {
 	t.Helper()
 	authority, err := goakt.GrainOf[*runtimeAuthority](t.Context(), system, string(identifier)+".authority", goakt.WithLongLivedGrain())
 	if err != nil {
@@ -142,7 +142,7 @@ func newMCPRuntime(t *testing.T, system goakt.ActorSystem, registry *goakt.Grain
 		captured.MCP = definitions
 		selection = &captured
 	}
-	sender, err := runtimeactor.NewClient(t.Context(), system, runtimeactor.InitializeRuntime{
+	sender, err := runtimeactor.NewSupervisor(t.Context(), system, runtimeactor.InitializeRuntime{
 		AgentID:    identifier,
 		CreationID: "creation",
 		Authority:  authority,

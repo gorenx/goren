@@ -1,4 +1,4 @@
-package runtimeactor
+package toolactor
 
 import (
 	"context"
@@ -7,23 +7,23 @@ import (
 
 	"github.com/gorenx/goren/session"
 	toolregistry "github.com/gorenx/goren/tools/registry"
-	catalogactor "github.com/gorenx/goren/tools/registry/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
-// Catalog reads unmerged Registry configuration from a framework task.
-type Catalog struct {
+// Client accesses configuration owned by the Tools Registry. It owns no catalog
+// data, Actor lifetime or tool implementations.
+type Client struct {
 	system  goakt.ActorSystem
 	target  *goakt.GrainIdentity
 	timeout time.Duration
 }
 
-// NewCatalog binds an existing Schema Registry without starting Actors.
-func NewCatalog(system goakt.ActorSystem, target *goakt.GrainIdentity, timeout time.Duration) (*Catalog, error) {
+// NewClient binds an existing Schema Registry without starting Actors.
+func NewClient(system goakt.ActorSystem, target *goakt.GrainIdentity, timeout time.Duration) (*Client, error) {
 	if system == nil || target == nil || timeout <= 0 {
 		return nil, errors.New("tools: Registry endpoint and timeout are required")
 	}
-	return &Catalog{
+	return &Client{
 		system:  system,
 		target:  target,
 		timeout: timeout,
@@ -31,17 +31,19 @@ func NewCatalog(system goakt.ActorSystem, target *goakt.GrainIdentity, timeout t
 }
 
 // Read returns the Session Registry configuration before MCP discovery.
-func (endpoint *Catalog) Read(ctx context.Context, identifier session.SessionID) (toolregistry.Configuration, error) {
+func (endpoint *Client) Read(ctx context.Context, identifier session.SessionID) (toolregistry.Configuration, error) {
 	payload, err := endpoint.system.AskGrain(
 		ctx,
 		endpoint.target,
-		catalogactor.ReadConfiguration{SessionID: identifier},
+		ReadConfiguration{
+			SessionID: identifier,
+		},
 		endpoint.timeout,
 	)
 	if err != nil {
 		return toolregistry.Configuration{}, err
 	}
-	reply, valid := payload.(catalogactor.Configuration)
+	reply, valid := payload.(Configuration)
 	if !valid {
 		return toolregistry.Configuration{}, errors.New("tools: invalid Registry configuration reply")
 	}
@@ -49,11 +51,11 @@ func (endpoint *Catalog) Read(ctx context.Context, identifier session.SessionID)
 }
 
 // ConfigureSession records an explicitly supplied Session catalog before initialization.
-func (endpoint *Catalog) ConfigureSession(ctx context.Context, identifier session.SessionID, input toolregistry.Catalog) error {
+func (endpoint *Client) ConfigureSession(ctx context.Context, identifier session.SessionID, input toolregistry.Catalog) error {
 	payload, err := endpoint.system.AskGrain(
 		ctx,
 		endpoint.target,
-		catalogactor.ConfigureSession{
+		ConfigureSession{
 			SessionID: identifier,
 			Catalog:   input,
 		},
@@ -62,7 +64,7 @@ func (endpoint *Catalog) ConfigureSession(ctx context.Context, identifier sessio
 	if err != nil {
 		return err
 	}
-	reply, valid := payload.(catalogactor.Completion)
+	reply, valid := payload.(Completion)
 	if !valid {
 		return errors.New("tools: invalid Session configuration reply")
 	}

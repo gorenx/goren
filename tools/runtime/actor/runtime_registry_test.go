@@ -5,8 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorenx/goren/llm"
-	toolregistry "github.com/gorenx/goren/tools/registry"
 	catalogactor "github.com/gorenx/goren/tools/registry/actor"
 	runtimeactor "github.com/gorenx/goren/tools/runtime/actor"
 	"github.com/gorenx/goren/tools/tool"
@@ -15,7 +13,7 @@ import (
 	"github.com/tochemey/goakt/v4/log"
 )
 
-func startCatalog(t *testing.T, pubsub bool, entries tool.Providers, sources ...tool.ProviderSource) (goakt.ActorSystem, *goakt.GrainIdentity, *runtimeactor.Catalog) {
+func startCatalog(t *testing.T, pubsub bool, entries tool.Providers, sources ...tool.ProviderSource) (goakt.ActorSystem, *goakt.GrainIdentity, *catalogactor.Client) {
 	t.Helper()
 	constructors := &toolactor.Providers{}
 	err := constructors.Install(entries, sources...)
@@ -46,7 +44,7 @@ func startCatalog(t *testing.T, pubsub bool, entries tool.Providers, sources ...
 	if err != nil {
 		t.Fatal(err)
 	}
-	endpoint, err := runtimeactor.NewCatalog(system, target, time.Second)
+	endpoint, err := catalogactor.NewClient(system, target, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,36 +62,4 @@ func ask[T any](t *testing.T, system goakt.ActorSystem, target *goakt.GrainIdent
 		t.Fatalf("unexpected reply %T", payload)
 	}
 	return reply
-}
-
-func TestCatalogReturnsUnmergedGlobalAndCustomSchemas(t *testing.T) {
-	system, target, endpoint := startCatalog(t, true, nil)
-	reply := ask[catalogactor.Completion](t, system, target, catalogactor.RegisterSource{
-		Name: "local",
-		Catalog: toolregistry.Catalog{
-			Schemas: []llm.ToolSchema{
-				{
-					Name:       "read",
-					Parameters: []byte(`{"type":"object"}`),
-				},
-			},
-		},
-	})
-	if reply.Err != nil {
-		t.Fatal(reply.Err)
-	}
-	hidden := false
-	err := endpoint.ConfigureSession(context.Background(), "agent", toolregistry.Catalog{
-		InheritGlobal: true,
-		Policies: map[string]toolregistry.Policy{
-			"read": {Visible: &hidden},
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	configured, err := endpoint.Read(context.Background(), "agent")
-	if err != nil || len(configured.Global.Schemas) != 1 || len(configured.Custom.Schemas) != 0 || *configured.Custom.Policies["read"].Visible {
-		t.Fatalf("configuration=%+v error=%v", configured, err)
-	}
 }

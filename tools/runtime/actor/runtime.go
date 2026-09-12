@@ -10,6 +10,7 @@ import (
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/mcpclient"
 	"github.com/gorenx/goren/session"
+	catalogactor "github.com/gorenx/goren/tools/registry/actor"
 	toolruntime "github.com/gorenx/goren/tools/runtime"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/reentrancy"
@@ -127,7 +128,7 @@ func (owner *Runtime) OnReceive(gc *goakt.GrainContext) {
 			owner.finish(input.operation, err)
 			return
 		}
-		directory, err := NewCatalog(gc.ActorSystem(), settings.Registry, settings.Timeout)
+		directory, err := catalogactor.NewClient(gc.ActorSystem(), settings.Registry, settings.Timeout)
 		if err != nil {
 			owner.finish(input.operation, err)
 			return
