@@ -50,7 +50,7 @@ func DecodeConfigureRequest(raw json.RawMessage) (ConfigureRequest, []connection
 	issues = append(issues, more...)
 	name, more := nameField(fields)
 	issues = append(issues, more...)
-	revision, more := revisionField(fields)
+	revision, more := revisionField(fields, 1)
 	issues = append(issues, more...)
 	var enabled bool
 	if encoded, found := fields["enabled"]; !found || json.Unmarshal(encoded, &enabled) != nil || bytes.Equal(bytes.TrimSpace(encoded), []byte("null")) {
@@ -71,7 +71,7 @@ func DecodeRemoveRequest(raw json.RawMessage) (RemoveRequest, []connection.Valid
 	issues = append(issues, more...)
 	name, more := nameField(fields)
 	issues = append(issues, more...)
-	revision, more := revisionField(fields)
+	revision, more := revisionField(fields, 1)
 	return RemoveRequest{
 		ParentSessionID:  parent,
 		Name:             name,
@@ -86,7 +86,7 @@ func DecodeRestartRequest(raw json.RawMessage) (RestartRequest, []connection.Val
 	issues = append(issues, more...)
 	name, more := nameField(fields)
 	issues = append(issues, more...)
-	revision, more := revisionField(fields)
+	revision, more := revisionField(fields, 0)
 	issues = append(issues, more...)
 	lifetime, more := rpc.RequiredString(fields, "expectedCreationId", false)
 	return RestartRequest{
@@ -124,11 +124,11 @@ func nameField(fields map[string]json.RawMessage) (string, []connection.Validati
 	return value, issues
 }
 
-func revisionField(fields map[string]json.RawMessage) (int64, []connection.ValidationIssue) {
+func revisionField(fields map[string]json.RawMessage, minimum int64) (int64, []connection.ValidationIssue) {
 	encoded, found := fields["expectedRevision"]
 	var revision int64
-	if !found || json.Unmarshal(encoded, &revision) != nil || revision < 1 {
-		return 0, []connection.ValidationIssue{rpc.InvalidType([]string{"expectedRevision"}, "positive integer")}
+	if !found || string(encoded) == "null" || json.Unmarshal(encoded, &revision) != nil || revision < minimum {
+		return 0, []connection.ValidationIssue{rpc.InvalidType([]string{"expectedRevision"}, "valid revision")}
 	}
 	return revision, nil
 }

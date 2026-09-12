@@ -90,3 +90,18 @@ func TestManagementRequestsRejectUnknownAndMalformedFields(t *testing.T) {
 		t.Fatalf("valid explicit policy was rejected: %+v %+v", valid, issues)
 	}
 }
+
+func TestRestartAcceptsUnrecordedPreparationRevision(t *testing.T) {
+	for _, encoded := range []string{"0", "1"} {
+		_, issues := DecodeRestartRequest(json.RawMessage(`{"parentSessionId":"parent","name":"reviewer","expectedRevision":` + encoded + `,"expectedCreationId":""}`))
+		if len(issues) != 0 {
+			t.Fatalf("revision %s rejected: %+v", encoded, issues)
+		}
+	}
+	for _, encoded := range []string{"null", "-1", "0.5"} {
+		_, issues := DecodeRestartRequest(json.RawMessage(`{"parentSessionId":"parent","name":"reviewer","expectedRevision":` + encoded + `,"expectedCreationId":""}`))
+		if len(issues) == 0 {
+			t.Fatalf("invalid revision %s accepted", encoded)
+		}
+	}
+}

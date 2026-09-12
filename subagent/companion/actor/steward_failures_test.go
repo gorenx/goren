@@ -93,47 +93,59 @@ func (fixture *stewardship) reopenWith(t *testing.T, registry, conversation *goa
 }
 
 func TestStewardRetriesOriginalIntentAfterFlushFailure(t *testing.T) {
-	fixture := newStewardship(t)
-	conversation := request[sessionregistry.Endpoint](t, fixture.system, fixture.sessions, sessionregistry.ResolveSession{
-		SessionID:  fixture.input.Creation.AgentID,
-		CreationID: fixture.input.Creation.CreationID,
-	})
-	port := faultRoute(t, fixture, faultSetup{
-		target: conversation.Target,
-		flush:  true,
-	})
-	fixture.reopenWith(t, fixture.authority, port)
-	input := Create{
-		Name:    "durable",
-		Enabled: true,
-	}
-	failed, err := fixture.client.Create(t.Context(), input)
-	if !errors.Is(err, errInjected) {
-		t.Fatalf("Flush failure hidden: %v", err)
-	}
-	if failed.Persisted || failed.Creation.CreationID != "" {
-		t.Fatal("unconfirmed intent published or started")
-	}
-	confirmed, err := fixture.client.Create(t.Context(), input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !confirmed.Persisted || confirmed.Companion.ChildSessionID != failed.Companion.ChildSessionID {
-		t.Fatal("retry replaced original intent")
-	}
-	awaitPhase(t, fixture.client, "durable", Ready)
-	stored, err := fixture.creator.storage.Load(t.Context(), "parent")
-	if err != nil {
-		t.Fatal(err)
-	}
-	count := 0
-	for _, entry := range stored.Events {
-		if entry.Type == "companion/instance" {
-			count++
-		}
-	}
-	if count != 1 {
-		t.Fatalf("retry duplicated management fact: %d", count)
+	for _, method := range []string{"create", "restart"} {
+		t.Run(method, func(t *testing.T) {
+			fixture := newStewardship(t)
+			conversation := request[sessionregistry.Endpoint](t, fixture.system, fixture.sessions, sessionregistry.ResolveSession{
+				SessionID:  fixture.input.Creation.AgentID,
+				CreationID: fixture.input.Creation.CreationID,
+			})
+			port := faultRoute(t, fixture, faultSetup{
+				target: conversation.Target,
+				flush:  true,
+			})
+			fixture.reopenWith(t, fixture.authority, port)
+			input := Create{
+				Name:    "durable",
+				Enabled: true,
+			}
+			failed, err := fixture.client.Create(t.Context(), input)
+			if !errors.Is(err, errInjected) {
+				t.Fatalf("Flush failure hidden: %v", err)
+			}
+			if failed.Persisted || failed.Creation.CreationID != "" {
+				t.Fatal("unconfirmed intent published or started")
+			}
+			if method == "create" {
+				_, err = fixture.client.Create(t.Context(), input)
+			} else {
+				_, err = fixture.client.Restart(t.Context(), Restart{
+					Name:               input.Name,
+					ExpectedRevision:   failed.Companion.Revision,
+					ExpectedCreationID: failed.Creation.CreationID,
+				})
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			confirmed := awaitPhase(t, fixture.client, "durable", Ready)
+			if !confirmed.Persisted || confirmed.Companion.ChildSessionID != failed.Companion.ChildSessionID {
+				t.Fatal("retry replaced original intent")
+			}
+			stored, err := fixture.creator.storage.Load(t.Context(), "parent")
+			if err != nil {
+				t.Fatal(err)
+			}
+			count := 0
+			for _, entry := range stored.Events {
+				if entry.Type == "companion/instance" {
+					count++
+				}
+			}
+			if count != 1 {
+				t.Fatalf("retry duplicated management fact: %d", count)
+			}
+		})
 	}
 }
 

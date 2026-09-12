@@ -2,6 +2,10 @@ package companionactor
 
 import (
 	"context"
+	"errors"
+	"sync/atomic"
+
+	"github.com/gorenx/goren/agent"
 	"testing"
 	"time"
 
@@ -193,5 +197,135 @@ func TestDefaultPreparationFailureIsVisibleWithoutCreatingChild(t *testing.T) {
 	})
 	if missing.Err == nil {
 		t.Fatal("preparation failure admitted a child")
+	}
+	current, err := fixture.creator.settings.Describe(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.creator.settings.UpdateCompanion(t.Context(), "reviewer", current.State.Version(settings.Group{
+		Section: settings.CompanionSection,
+		Name:    "reviewer",
+	}), companions.Config{
+		Enabled:       true,
+		Configuration: "review-template",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sender.Restart(t.Context(), Restart{
+		Name:               "reviewer",
+		ExpectedRevision:   failed.Companion.Revision,
+		ExpectedCreationID: failed.Creation.CreationID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recovered := awaitPhase(t, sender, "reviewer", Ready)
+	if !recovered.Persisted || recovered.Companion.ChildSessionID == "" {
+		t.Fatalf("retry did not persist and start the prepared Companion: %+v", recovered)
+	}
+}
+
+// retryCreator returns one preparation error, then exposes cancellation
+// while deliberately retaining its result until the test releases it.
+type retryCreator struct {
+	ChildCreator
+	attempts  atomic.Int32
+	starts    atomic.Int32
+	entered   chan struct{}
+	cancelled chan struct{}
+	release   chan struct{}
+}
+
+func (barrier *retryCreator) Resolve(ctx context.Context, _ agentregistry.Creation, _ companions.Config, values settings.Values) (settings.Values, error) {
+	if barrier.attempts.Add(1) == 1 {
+		return settings.Values{}, errors.New("test: initial preparation failed")
+	}
+	close(barrier.entered)
+	<-ctx.Done()
+	close(barrier.cancelled)
+	<-barrier.release
+	return values.Clone(), nil
+}
+
+func (barrier *retryCreator) Start(ctx context.Context, parent, child agentregistry.Creation, name string) (agentregistry.Ready, error) {
+	barrier.starts.Add(1)
+	return barrier.ChildCreator.Start(ctx, parent, child, name)
+}
+
+func TestDefaultPreparationRetrySettlesBeforeParentClose(t *testing.T) {
+	fixture := newStewardship(t)
+	if _, err := fixture.creator.settings.UpdateAgent(t.Context(), "retry-template", 0, settings.Values{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.creator.settings.UpdateCompanion(t.Context(), "reviewer", 0, companions.Config{
+		Enabled:       true,
+		Configuration: "retry-template",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	barrier := &retryCreator{
+		ChildCreator: fixture.creator,
+		entered:      make(chan struct{}),
+		cancelled:    make(chan struct{}),
+		release:      make(chan struct{}),
+	}
+	defer func() {
+		select {
+		case <-barrier.release:
+		default:
+			close(barrier.release)
+		}
+	}()
+	installer, sender, input := installParent(t, fixture, fixture.authority, barrier)
+	awaitInstallation(t, fixture, installer, input.Creation, Ready)
+	awaitPhase(t, sender, "reviewer", StartFailed)
+	if _, err := sender.Restart(t.Context(), Restart{
+		Name: "reviewer",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-barrier.entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("retry did not start preparation")
+	}
+	if _, err := sender.Restart(t.Context(), Restart{
+		Name: "reviewer",
+	}); !errors.Is(err, agent.ErrBusy) {
+		t.Fatalf("duplicate restart = %v", err)
+	}
+	if _, err := sender.Create(t.Context(), Create{
+		Name:    "reviewer",
+		Enabled: true,
+	}); !errors.Is(err, companions.ErrConflict) {
+		t.Fatalf("creation overlapped preparation: %v", err)
+	}
+	closed := make(chan error, 1)
+	go func() {
+		result, failure := ask[agentactor.Closed](t.Context(), fixture.system, fixture.authority, agentregistry.CloseAgent{
+			Creation: input.Creation,
+		})
+		closed <- errors.Join(failure, result.Err)
+	}()
+	select {
+	case <-barrier.cancelled:
+	case <-time.After(3 * time.Second):
+		t.Fatal("parent close did not cancel preparation")
+	}
+	select {
+	case failure := <-closed:
+		t.Fatalf("parent closed before preparation settled: %v", failure)
+	default:
+	}
+	close(barrier.release)
+	select {
+	case failure := <-closed:
+		if failure != nil {
+			t.Fatal(failure)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("parent close did not settle")
+	}
+	if barrier.starts.Load() != 0 {
+		t.Fatal("late preparation started a child after parent close")
 	}
 }

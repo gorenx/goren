@@ -14,6 +14,7 @@ import (
 	agentregistry "github.com/gorenx/goren/agent/registry"
 	commandsapi "github.com/gorenx/goren/apiproxy/commands"
 	companionapi "github.com/gorenx/goren/apiproxy/companion"
+	settingsapi "github.com/gorenx/goren/apiproxy/settings"
 	"github.com/gorenx/goren/connection"
 	"github.com/gorenx/goren/mcpclient"
 	"github.com/gorenx/goren/session"
@@ -518,5 +519,83 @@ func awaitCompanionHTTP(t *testing.T, ctx context.Context, read func() companion
 		case <-ctx.Done():
 			t.Fatalf("Companion %s did not reach %s: %+v", name, phase, current)
 		}
+	}
+}
+
+func TestCompanionPreparationFailureRestartsThroughHTTP(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	root := t.TempDir()
+	process, err := New(Config{
+		Address:           "127.0.0.1:0",
+		WorkingDirectory:  root,
+		SessionDatabase:   filepath.Join(root, "sessions.sqlite"),
+		WorkspaceDatabase: filepath.Join(root, "workspaces.sqlite"),
+		CredentialsPath:   filepath.Join(root, "credentials.json"),
+		Agents: map[string]settings.Values{
+			"review-config": {
+				Tools: map[string]tools.Config{"send_message": {}},
+			},
+		},
+		Companions: map[string]companions.Config{
+			"reviewer": {
+				Enabled:       true,
+				Configuration: "review-config",
+				Inherit: companions.Inheritance{
+					Tools: companions.InheritAllTools,
+				},
+			},
+		},
+	}, providerEnvironment{
+		home: root,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := process.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	}()
+	callHTTP(t, ctx, process, "session.create", json.RawMessage(`{"sessionId":"retry-parent"}`))
+	parent := serverReady(t, ctx, process, "retry-parent")
+	read := func() companionapi.Listing {
+		t.Helper()
+		var listing companionapi.Listing
+		if err := json.Unmarshal(callHTTP(t, ctx, process, companionapi.ListMethod, json.RawMessage(`{"parentSessionId":"retry-parent"}`)), &listing); err != nil {
+			t.Fatal(err)
+		}
+		return listing
+	}
+	failed := awaitCompanionHTTP(t, ctx, read, "reviewer", "start_failed")
+	if failed.Persisted || failed.Revision != 0 || failed.CreationID != "" || !failed.Failure {
+		t.Fatalf("incorrect preparation failure: %+v", failed)
+	}
+	settingsHTTP(t, ctx, process, settingsapi.UpdateCompanionMethod, settingsapi.UpdateCompanionRequest{
+		Name: "reviewer",
+		Config: companions.Config{
+			Enabled:       true,
+			Configuration: "review-config",
+		},
+	})
+	payload, err := json.Marshal(companionapi.RestartRequest{
+		ParentSessionID:    "retry-parent",
+		Name:               "reviewer",
+		ExpectedRevision:   failed.Revision,
+		ExpectedCreationID: failed.CreationID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	callHTTP(t, ctx, process, companionapi.RestartMethod, payload)
+	recovered := awaitCompanionHTTP(t, ctx, read, "reviewer", "ready")
+	if !recovered.Persisted || recovered.ChildSessionID == "" || recovered.CreationID == "" {
+		t.Fatalf("retry did not create a durable child: %+v", recovered)
+	}
+	if current := serverReady(t, ctx, process, "retry-parent"); current.Creation != parent.Creation {
+		t.Fatal("child preparation retry replaced parent")
 	}
 }

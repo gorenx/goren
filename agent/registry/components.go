@@ -276,46 +276,36 @@ type modelClient struct {
 func (endpoint *modelClient) Runtime() *goakt.GrainIdentity { return endpoint.owner }
 
 func (endpoint *modelClient) Initialize(gc *goakt.GrainContext, reply chan<- componentResult) {
-	requestComponent(
-		gc, endpoint.owner,
-		llmactor.InitializeAgent{
+	if endpoint.options == nil {
+		requestComponent(gc, endpoint.owner, llmactor.InitializeAgent{
 			AgentID:    string(endpoint.creation.AgentID),
 			CreationID: endpoint.creation.CreationID,
 			Session:    endpoint.conversation.Runtime(),
+		}, func(_ *goakt.GrainContext, initialized llmactor.Completion, failure error) {
+			reply <- componentResult{err: errors.Join(failure, initialized.Err)}
+		})
+		return
+	}
+	// Explicit creation settings replace the previous lifetime's selection.
+	// Resolve omitted fields against deployment defaults, never Session history.
+	requestComponent(gc, endpoint.owner, llmactor.ResolveAgent{
+		Overrides: llm.CallConfig{
+			Provider:  endpoint.options.Provider,
+			Model:     endpoint.options.Model,
+			MaxTokens: endpoint.options.Clone().MaxTokens,
 		},
-		func(gc *goakt.GrainContext, initialized llmactor.Completion, failure error) {
-			failure = errors.Join(failure, initialized.Err)
-			if failure != nil || endpoint.options == nil {
-				reply <- componentResult{err: failure}
-				return
-			}
-			requestComponent(gc, endpoint.owner, llmactor.ReadConfiguration{
-				AgentID: string(endpoint.creation.AgentID),
-			}, func(gc *goakt.GrainContext, current llmactor.ConfigurationResult, requestErr error) {
-				failure := errors.Join(requestErr, current.Err)
-				if failure != nil {
-					reply <- componentResult{err: failure}
-					return
-				}
-				configuration := llm.CloneCallConfig(current.Config)
-				if endpoint.options.Provider != "" {
-					configuration.Provider = endpoint.options.Provider
-				}
-				if endpoint.options.Model != "" {
-					configuration.Model = endpoint.options.Model
-				}
-				if endpoint.options.MaxTokens != nil {
-					configuration.MaxTokens = endpoint.options.Clone().MaxTokens
-				}
-				requestComponent(gc, endpoint.owner, llmactor.SetConfiguration{
-					AgentID: string(endpoint.creation.AgentID),
-					Config:  configuration,
-				}, func(_ *goakt.GrainContext, configured llmactor.ConfigurationResult, setErr error) {
-					reply <- componentResult{err: errors.Join(setErr, configured.Err)}
-				})
-			})
-		},
-	)
+	}, func(gc *goakt.GrainContext, resolved llmactor.AgentConfiguration, failure error) {
+		if failure = errors.Join(failure, resolved.Err); failure != nil {
+			reply <- componentResult{err: failure}
+			return
+		}
+		requestComponent(gc, endpoint.owner, llmactor.SetConfiguration{
+			AgentID: string(endpoint.creation.AgentID),
+			Config:  resolved.Resolved.Config,
+		}, func(_ *goakt.GrainContext, configured llmactor.ConfigurationResult, failure error) {
+			reply <- componentResult{err: errors.Join(failure, configured.Err)}
+		})
+	})
 }
 
 type agentClient struct {

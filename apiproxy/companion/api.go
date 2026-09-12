@@ -46,6 +46,7 @@ type RemoveRequest struct {
 }
 
 // RestartRequest fences a manual restart by relationship and child lifetime.
+// Revision zero and an empty creation ID identify failed initial preparation.
 type RestartRequest struct {
 	ParentSessionID    session.SessionID `json:"parentSessionId"`
 	Name               string            `json:"name"`
@@ -55,6 +56,8 @@ type RestartRequest struct {
 
 // View contains the durable target and current phase without private errors.
 type View struct {
+	// Configuration identifies the independent Settings entry used by this Companion.
+	Configuration   string            `json:"configuration,omitempty"`
 	ParentSessionID session.SessionID `json:"parentSessionId"`
 	Name            string            `json:"name"`
 	ChildSessionID  session.SessionID `json:"childSessionId,omitempty"`

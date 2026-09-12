@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/gorenx/goren/agent"
 	companionapi "github.com/gorenx/goren/apiproxy/companion"
 	sessionevents "github.com/gorenx/goren/apiproxy/session/events"
 	settingsapi "github.com/gorenx/goren/apiproxy/settings"
@@ -30,8 +29,9 @@ import (
 
 func TestCompanionConfigurationRestartsOnlyCompanion(t *testing.T) {
 	type request struct {
-		Model    string `json:"model"`
-		Messages []struct {
+		Model     string `json:"model"`
+		MaxTokens int    `json:"max_tokens"`
+		Messages  []struct {
 			Role    string          `json:"role"`
 			Content json.RawMessage `json:"content"`
 		} `json:"messages"`
@@ -58,9 +58,6 @@ func TestCompanionConfigurationRestartsOnlyCompanion(t *testing.T) {
 	defer cancel()
 	root := t.TempDir()
 	original := settings.Values{
-		Model: agent.Options{
-			Model: "deepseek-chat",
-		},
 		Prompts: map[string]settings.PromptConfig{
 			"default": {
 				Persona: new("companion-persona-original"),
@@ -142,11 +139,13 @@ func TestCompanionConfigurationRestartsOnlyCompanion(t *testing.T) {
 	if readConversationFrame(t, ctx, feed).Method != "session/subscribed" {
 		t.Fatal("missing subscription baseline")
 	}
+	var defaultMaxTokens int
 	for index, marker := range []string{"companion-persona-original", "companion-persona-updated", "companion-persona-original"} {
-		expectedModel := "deepseek-chat"
+		expectedModel := deepseek.DefaultModelID
 		if index == 1 {
 			updated := original.Clone()
 			updated.Model.Model = "deepseek-reasoner"
+			updated.Model.MaxTokens = new(1234)
 			expectedModel = updated.Model.Model
 			updated.Prompts["default"] = settings.PromptConfig{
 				Persona: &marker,
@@ -195,6 +194,16 @@ func TestCompanionConfigurationRestartsOnlyCompanion(t *testing.T) {
 		callHTTP(t, ctx, process, "session.prompt", json.RawMessage(fmt.Sprintf(`{"sessionId":%q,"mode":"queue","content":[{"type":"text","text":"review"}]}`, child.ChildSessionID)))
 		select {
 		case input := <-requests:
+			if index == 0 {
+				defaultMaxTokens = input.MaxTokens
+			}
+			expectedMaxTokens := defaultMaxTokens
+			if index == 1 {
+				expectedMaxTokens = 1234
+			}
+			if input.MaxTokens != expectedMaxTokens {
+				t.Fatalf("Turn %d max_tokens = %d, want %d", index, input.MaxTokens, expectedMaxTokens)
+			}
 			if input.Model != expectedModel {
 				t.Fatalf("Turn %d model = %q, want %q", index, input.Model, expectedModel)
 			}

@@ -131,6 +131,8 @@ func (owner *steward) OnReceive(gc *goakt.GrainContext) {
 		owner.restartConfiguredChild(gc, input)
 	case start:
 		owner.start(gc, input)
+	case defaultPrepared:
+		owner.defaultPrepared(gc, input)
 	case loaded:
 		owner.loaded(gc, input)
 	case recorded:

@@ -163,6 +163,7 @@ func (source *Manager) Restart(ctx context.Context, input companionapi.RestartRe
 
 func project(input companionactor.View) companionapi.View {
 	return companionapi.View{
+		Configuration:   input.Companion.Configuration,
 		ParentSessionID: input.Companion.ParentSessionID,
 		Name:            input.Companion.Name,
 		ChildSessionID:  input.Companion.ChildSessionID,

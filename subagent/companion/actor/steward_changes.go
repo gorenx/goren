@@ -81,8 +81,7 @@ func (owner *steward) create(gc *goakt.GrainContext, input Create) {
 		return
 	}
 	if entry != nil &&
-		entry.relationship.Name != "" &&
-		(!entry.relationship.Removed ||
+		(entry.relationship.Name != "" && !entry.relationship.Removed ||
 			entry.starting != nil ||
 			entry.closing != nil ||
 			entry.creation.CreationID != "") {
@@ -313,20 +312,37 @@ func (owner *steward) recorded(gc *goakt.GrainContext, result recorded) {
 
 func (owner *steward) restart(gc *goakt.GrainContext, input Restart) {
 	entry := owner.entries[input.Name]
-	if entry == nil || entry.relationship.Revision != input.ExpectedRevision || entry.relationship.Removed || !entry.relationship.Enabled || entry.creation.CreationID != input.ExpectedCreationID {
+	if entry == nil {
 		gc.Response(response{
 			err: companions.ErrConflict,
 		})
 		return
 	}
-	if entry.mutation != nil || entry.starting != nil || entry.closing != nil {
+	observed := entry.view().Companion
+	if observed.Revision != input.ExpectedRevision || observed.Removed || !observed.Enabled || entry.creation.CreationID != input.ExpectedCreationID {
+		gc.Response(response{
+			err: companions.ErrConflict,
+		})
+		return
+	}
+	if entry.starting != nil || entry.closing != nil ||
+		entry.mutation != nil && (entry.relationship.Name != "" || entry.mutation.stage != writeFailed) {
 		gc.Response(response{
 			err: agent.ErrBusy,
 		})
 		return
 	}
-	entry.failure = nil
-	owner.resume(gc, entry)
+	switch {
+	case entry.mutation != nil:
+		// Retry the original creation intent; an uncertain Flush must not
+		// allocate another Session or append a second relationship event.
+		owner.writeChange(gc, entry, entry.mutation)
+	case entry.relationship.Name == "":
+		owner.retryDefault(gc, entry)
+	default:
+		entry.failure = nil
+		owner.resume(gc, entry)
+	}
 	gc.Response(response{
 		view: entry.view(),
 	})
