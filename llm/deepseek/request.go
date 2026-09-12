@@ -14,8 +14,8 @@ import (
 )
 
 const (
-	harnessProductName = "deepseek-harness"
-	harnessProjectURL  = "https://github.com/deepseek-ai/deepseek-harness"
+	harnessProductName = "Goren-agent"
+	harnessProjectURL  = "https://github.com/gorenx/goren"
 )
 
 type responseResult struct {

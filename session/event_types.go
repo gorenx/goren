@@ -204,6 +204,9 @@ type ToolResult struct {
 }
 
 // EpochHeader is the complete non-message state for one reconstructed request.
+// Unlike Header, it describes effective model input rather than Session identity.
+// LatestRequestHeader folds request/header events to recover this state. It has
+// no Turn number or Settings revision and is not a configuration-change command.
 type EpochHeader struct {
 	Config          llm.CallConfig                 `json:"config"`
 	AdapterDefaults *llm.CallConfigAdapterDefaults `json:"adapterDefaults,omitempty"`
@@ -224,6 +227,12 @@ const (
 )
 
 // RequestHeaderSnapshot updates the request reconstruction fold.
+// The Agent records it before model I/O on its first request or when the
+// effective header changes; an unchanged header is reused across Steps/Turns.
+// For example, turn/start {turn: 2}, step/start {turn: 2, step: 3}, followed by
+// request/header {header: ..., reason: "change"} records the new request state
+// inside Turn 2. The enclosing log sequence supplies position, not this payload.
+// The event is a persisted fact; AppendedEventName identifies its live notice.
 type RequestHeaderSnapshot struct {
 	Header EpochHeader         `json:"header"`
 	Reason RequestHeaderReason `json:"reason"`

@@ -55,8 +55,8 @@ func (owner *Grain) createChildAgent(gc *goakt.GrainContext, input CreateChildAg
 	derived.Parent = &input.Parent
 	derived.Restore = input.Restore
 	derived.Options = input.Options.Clone()
-	derived.ConfigurationName = input.ConfigurationName
-	if input.ConfigurationName == "" {
+	derived.ConfigurationName = input.ConfigName
+	if input.ConfigName == "" {
 		// Children without a named Settings selection retain their existing
 		// configuration mechanism instead of implicitly following process defaults.
 		derived.Settings = nil

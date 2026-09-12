@@ -6,6 +6,9 @@ import (
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
+// publishEvents sends live notifications for already committed log entries.
+// Delivery uses asynchronous GoAkt PubSub: returning here acknowledges neither subscriber
+// processing nor storage durability. Flush supplies the durability boundary.
 func (owner *Grain) publishEvents(gc *goakt.GrainContext, events []session.Event) {
 	topic := gc.ActorSystem().TopicActor()
 	if topic == nil {

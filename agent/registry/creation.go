@@ -2,7 +2,6 @@ package registry
 
 import (
 	"errors"
-
 	"reflect"
 	"regexp"
 	"slices"
@@ -73,17 +72,17 @@ type FindAgent struct {
 // parent-child admission.
 type CreateChildAgent struct {
 	// Manager receives restart requests for this exact child lifetime.
-	Manager           *goakt.GrainIdentity
-	ConfigurationName string
-	Role              agent.Role
-	Parent            Creation
-	Child             Creation
-	Restore           bool
-	Options           session.CreateOptions
-	AgentOptions      *agent.Options
-	Prompt            *systemprompt.Config
-	Tools             *toolregistry.Catalog
-	PromptSections    []systemprompt.PromptSection
+	Manager        *goakt.GrainIdentity
+	ConfigName     string
+	Role           agent.Role
+	Parent         Creation
+	Child          Creation
+	Restore        bool
+	Options        session.CreateOptions
+	AgentOptions   *agent.Options
+	Prompt         *systemprompt.Config
+	Tools          *toolregistry.Catalog
+	PromptSections []systemprompt.PromptSection
 	// Components replaces the parent's additional capability owners. Nil inherits
 	// the frozen parent list; a non-nil empty slice installs no additional components.
 	Components []*goakt.GrainIdentity
@@ -189,7 +188,9 @@ func (original CreateAgent) matches(input CreateAgent) bool {
 		!sameRoute(original.SessionRegistry, input.SessionRegistry) ||
 		!sameRoute(original.ModelConfig, input.ModelConfig) ||
 		original.ModelRouter != input.ModelRouter ||
-		!reflect.DeepEqual(original.Handlers, input.Handlers) ||
+		!sameMiddlewareRoutes(original.Handlers.PreStep, input.Handlers.PreStep) ||
+		!sameMiddlewareRoutes(original.Handlers.RequestError, input.Handlers.RequestError) ||
+		!sameMiddlewareRoutes(original.Handlers.TurnStopping, input.Handlers.TurnStopping) ||
 		!sameRoute(original.Middleware, input.Middleware) ||
 		!sameRoute(original.PromptRegistry, input.PromptRegistry) ||
 		!sameRoute(original.ToolsRegistry, input.ToolsRegistry) ||
@@ -212,4 +213,12 @@ func sameRoute(left, right *goakt.GrainIdentity) bool {
 		return left == right
 	}
 	return left.Equal(right)
+}
+
+// Middleware selections compare registration order and routing identity, not
+// framework-internal validation state retained by each GrainIdentity.
+func sameMiddlewareRoutes(left, right []middlewareactor.Route) bool {
+	return slices.EqualFunc(left, right, func(first, second middlewareactor.Route) bool {
+		return first.Definition == second.Definition && sameRoute(first.Target, second.Target)
+	})
 }

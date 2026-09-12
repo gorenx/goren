@@ -27,6 +27,10 @@ const (
 )
 
 // Header is immutable Session metadata kept outside the conversation event log.
+// It identifies the conversation and its creation lineage, not an LLM request.
+// For example, changing the model leaves Header.ID and Header.ParentSession
+// unchanged; the effective request parameters are recorded in an EpochHeader
+// carried by a request/header event instead.
 type Header struct {
 	Version         int        `json:"version"`
 	ID              SessionID  `json:"id"`

@@ -92,17 +92,17 @@ func (owner *Creator) Start(
 		}
 	}
 	input := agentregistry.CreateChildAgent{
-		Manager:           manager,
-		ConfigurationName: configName,
-		Role:              agent.CompanionRole,
-		Parent:            parent,
-		Child:             child,
-		Restore:           stored != nil,
-		AgentOptions:      &initial.Model,
-		Prompt:            &prompt,
-		Tools:             &selection,
-		PromptSections:    []systemprompt.PromptSection{report.Section()},
-		Components:        components,
+		Manager:        manager,
+		ConfigName:     configName,
+		Role:           agent.CompanionRole,
+		Parent:         parent,
+		Child:          child,
+		Restore:        stored != nil,
+		AgentOptions:   &initial.Model,
+		Prompt:         &prompt,
+		Tools:          &selection,
+		PromptSections: []systemprompt.PromptSection{report.Section()},
+		Components:     components,
 	}
 	if !input.Restore {
 		input.Options.Metadata.Origin = session.OriginSubagent
