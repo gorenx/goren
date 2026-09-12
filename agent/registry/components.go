@@ -114,6 +114,7 @@ func newInstallation(
 	}
 	for index, route := range input.Components {
 		endpoint := &capabilityClient{
+			role:         input.Role,
 			owner:        route,
 			creation:     input.Creation,
 			conversation: conversation,
@@ -455,6 +456,7 @@ func (endpoint *commandsClient) Close(gc *goakt.GrainContext, reply chan<- error
 }
 
 type capabilityClient struct {
+	role         agent.Role
 	owner        *goakt.GrainIdentity
 	creation     Creation
 	conversation *sessionClient
@@ -467,6 +469,7 @@ func (endpoint *capabilityClient) Initialize(gc *goakt.GrainContext, reply chan<
 	requestComponent(
 		gc, endpoint.owner,
 		agentactor.StartComponent{
+			Role:       endpoint.role,
 			AgentID:    endpoint.creation.AgentID,
 			CreationID: endpoint.creation.CreationID,
 			Agent:      endpoint.executor.Runtime(),
@@ -490,6 +493,7 @@ func (endpoint *capabilityClient) Close(gc *goakt.GrainContext, reply chan<- err
 		gc,
 		endpoint.owner,
 		agentactor.StopComponent{
+			Role:       endpoint.role,
 			AgentID:    endpoint.creation.AgentID,
 			CreationID: endpoint.creation.CreationID,
 		},

@@ -8,7 +8,7 @@ import (
 	agentregistry "github.com/gorenx/goren/agent/registry"
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
-	"github.com/gorenx/goren/subagent/companion"
+	companions "github.com/gorenx/goren/subagent/companion"
 	"github.com/gorenx/goren/subagent/tools/control"
 	"github.com/gorenx/goren/subagent/tools/report"
 	"github.com/gorenx/goren/tools"
@@ -18,14 +18,16 @@ import (
 // Messenger routes the shared subagent tools to a Companion's Steward. It has no
 // Agent ownership, directory cache, startup side effects or recovery policy.
 type Messenger struct {
-	system    goakt.ActorSystem
+	// system is borrowed for Registry queries and Steward requests.
+	system goakt.ActorSystem
+	// authority is the Agent Registry endpoint that verifies the caller and its direct parent.
 	authority *goakt.GrainIdentity
 }
 
 // NewMessenger binds existing Registry and framework capabilities.
 func NewMessenger(system goakt.ActorSystem, authority *goakt.GrainIdentity) (*Messenger, error) {
 	if system == nil || authority == nil {
-		return nil, companion.ErrInvalid
+		return nil, companions.ErrInvalid
 	}
 	return &Messenger{
 		system:    system,

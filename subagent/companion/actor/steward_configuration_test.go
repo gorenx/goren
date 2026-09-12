@@ -10,7 +10,7 @@ import (
 	sessionactor "github.com/gorenx/goren/session/actor"
 	sessionregistry "github.com/gorenx/goren/session/registry"
 	"github.com/gorenx/goren/settings"
-	"github.com/gorenx/goren/subagent/companion"
+	companions "github.com/gorenx/goren/subagent/companion"
 	promptactor "github.com/gorenx/goren/systemprompt/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/reentrancy"
@@ -34,9 +34,7 @@ func TestCompanionConfigurationSavePrecedesRelationshipAndRetryReusesName(t *tes
 	for _, failureAt := range []string{"settings", "relationship-flush"} {
 		t.Run(failureAt, func(t *testing.T) {
 			fixture := newStewardship(t)
-			if err := fixture.client.Close(t.Context()); err != nil {
-				t.Fatal(err)
-			}
+			fixture.stopSteward(t)
 			conversation := request[sessionregistry.Endpoint](t, fixture.system, fixture.sessions, sessionregistry.ResolveSession{
 				SessionID:  fixture.input.Creation.AgentID,
 				CreationID: fixture.input.Creation.CreationID,
@@ -54,7 +52,7 @@ func TestCompanionConfigurationSavePrecedesRelationshipAndRetryReusesName(t *tes
 					flush:  true,
 				})
 			}
-			endpoint, err := Open(t.Context(), fixture.system, Initialization{
+			endpoint, err := acceptSteward(t.Context(), fixture.system, start{
 				Parent:   fixture.input.Creation,
 				Registry: fixture.authority,
 				Session:  target,
@@ -64,6 +62,7 @@ func TestCompanionConfigurationSavePrecedesRelationshipAndRetryReusesName(t *tes
 			if err != nil {
 				t.Fatal(err)
 			}
+			awaitSteward(t, endpoint, Ready)
 			fixture.client = endpoint
 			input := Create{
 				Name:    "reviewer",
@@ -162,7 +161,7 @@ func TestCompanionRestartReadsItsNamedConfiguration(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fixture.creator.settings.UpdateCompanion(t.Context(), "reviewer", 0, companion.Config{
+	if _, err := fixture.creator.settings.UpdateCompanion(t.Context(), "reviewer", 0, companions.Config{
 		Enabled:       true,
 		Configuration: "reviewer-default",
 	}); err != nil {

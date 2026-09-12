@@ -11,27 +11,38 @@ import (
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
+// startup is an admitted child creation that must settle even after cancellation.
 type startup struct {
+	// cancel requests creation cancellation without abandoning admitted creation or cleanup responsibility.
 	cancel context.CancelFunc
 }
 type started struct {
-	entry     *resident
+	// entry identifies the Companion whose child creation is settling.
+	entry *companion
+	// operation identifies the original creation attempt and fences late results.
 	operation *startup
-	ready     agentregistry.Ready
-	err       error
+	// ready is the ordinary Registry result, checked for child identity, role and parent before use.
+	ready agentregistry.Ready
+	// err reports creation or returned-identity failure for subsequent Steward cleanup.
+	err error
 }
 
+// shutdown is an in-flight close of the child's exact creation.
 type shutdown struct {
+	// cancel interrupts a natural-completion wait; admitted Registry resource closure must still settle.
 	cancel context.CancelFunc
 }
 type closed struct {
-	entry     *resident
+	// entry identifies the Companion whose child closure is settling.
+	entry *companion
+	// operation identifies the close attempt that must still be current when its result arrives.
 	operation *shutdown
-	err       error
+	// err is the final close failure; only success clears the child lifetime and endpoint.
+	err error
 }
 
-func (owner *steward) reconcile(gc *goakt.GrainContext, entry *resident) {
-	shouldClose := owner.state == shuttingDown || entry.record.Removed || !entry.record.Enabled
+func (owner *steward) reconcile(gc *goakt.GrainContext, entry *companion) {
+	shouldClose := owner.state == shuttingDown || entry.relationship.Removed || !entry.relationship.Enabled
 	if entry.starting != nil {
 		if shouldClose {
 			entry.phase = Stopping
@@ -54,7 +65,7 @@ func (owner *steward) reconcile(gc *goakt.GrainContext, entry *resident) {
 		}
 		return
 	}
-	if owner.state == shuttingDown || entry.record.Removed || !entry.record.Enabled {
+	if owner.state == shuttingDown || entry.relationship.Removed || !entry.relationship.Enabled {
 		return
 	}
 	if entry.failure != nil {
@@ -64,7 +75,7 @@ func (owner *steward) reconcile(gc *goakt.GrainContext, entry *resident) {
 }
 
 // resume starts a new lifetime only after any previous creation has settled.
-func (owner *steward) resume(gc *goakt.GrainContext, entry *resident) {
+func (owner *steward) resume(gc *goakt.GrainContext, entry *companion) {
 	if owner.state == active && entry.starting == nil && entry.closing == nil && entry.creation.CreationID != "" {
 		owner.closeChild(gc, entry, true)
 		return
@@ -72,9 +83,9 @@ func (owner *steward) resume(gc *goakt.GrainContext, entry *resident) {
 	owner.reconcile(gc, entry)
 }
 
-func (owner *steward) startChild(gc *goakt.GrainContext, entry *resident) {
+func (owner *steward) startChild(gc *goakt.GrainContext, entry *companion) {
 	entry.creation = agentregistry.Creation{
-		AgentID:    entry.record.ChildSessionID,
+		AgentID:    entry.relationship.ChildSessionID,
 		CreationID: uuid.NewString(),
 	}
 	entry.phase = Starting
@@ -83,10 +94,10 @@ func (owner *steward) startChild(gc *goakt.GrainContext, entry *resident) {
 		cancel: cancel,
 	}
 	entry.starting = operation
-	creator := owner.input.Creator
-	parent := owner.input.Parent
+	creator := owner.creator
+	parent := owner.parent
 	child := entry.creation
-	configuration := entry.record.Configuration
+	configuration := entry.relationship.Configuration
 	err := gc.PipeToSelf(func() (any, error) {
 		ready, failure := creator.Start(ctx, parent, child, configuration)
 		if failure == nil {
@@ -137,7 +148,7 @@ func (owner *steward) started(gc *goakt.GrainContext, result started) {
 	owner.finishClose()
 }
 
-func (owner *steward) closeChild(gc *goakt.GrainContext, entry *resident, finishCurrent bool) {
+func (owner *steward) closeChild(gc *goakt.GrainContext, entry *companion, finishCurrent bool) {
 	ctx, cancel := context.WithCancel(context.Background())
 	operation := &shutdown{
 		cancel: cancel,
@@ -148,7 +159,7 @@ func (owner *steward) closeChild(gc *goakt.GrainContext, entry *resident, finish
 		entry.phase = Draining
 	}
 	system := gc.ActorSystem()
-	authority := owner.input.Registry
+	authority := owner.registry
 	creation := entry.creation
 	executor := entry.executor
 	err := gc.PipeToSelf(func() (any, error) {
@@ -224,9 +235,10 @@ func (owner *steward) close(gc *goakt.GrainContext) {
 		return
 	}
 	owner.state = shuttingDown
+	owner.failure = nil
 	owner.waiters = append(owner.waiters, reply)
-	if owner.loadCancel != nil {
-		owner.loadCancel()
+	if owner.recovery != nil {
+		owner.recovery.cancel()
 	}
 	for operation := range owner.deliveries {
 		operation.cancel()
@@ -238,7 +250,7 @@ func (owner *steward) close(gc *goakt.GrainContext) {
 }
 
 func (owner *steward) finishClose() {
-	if owner.state != shuttingDown || len(owner.waiters) == 0 || len(owner.deliveries) != 0 || owner.loadReply != nil {
+	if owner.state != shuttingDown || len(owner.waiters) == 0 || len(owner.deliveries) != 0 || owner.recovery != nil {
 		return
 	}
 	var failures []error
@@ -255,6 +267,7 @@ func (owner *steward) finishClose() {
 		}
 	}
 	failure := errors.Join(failures...)
+	owner.failure = failure
 	if failure == nil {
 		owner.state = terminated
 	}

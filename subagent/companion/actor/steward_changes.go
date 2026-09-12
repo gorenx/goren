@@ -12,7 +12,7 @@ import (
 	"github.com/gorenx/goren/session"
 	sessionactor "github.com/gorenx/goren/session/actor"
 	"github.com/gorenx/goren/settings"
-	"github.com/gorenx/goren/subagent/companion"
+	companions "github.com/gorenx/goren/subagent/companion"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
@@ -24,20 +24,32 @@ const (
 	writeFailed
 )
 
+// mutation is a management change whose frozen intent and replies survive
+// failed persistence attempts until the same change can settle.
 type mutation struct {
+	// failure retains the last configuration or relationship persistence error for queries and retry.
 	failure error
-	next    companion.Companion
-	plan    *companion.Record
+	// next is the frozen target relationship, published only after persistence is confirmed.
+	next companions.Companion
+	// plan reuses the same Session WritePlan so retries locate the original commit without duplicate writes.
+	plan *companions.Record
+	// request encodes the original management input for identical-request and conflict checks.
 	request []byte
+	// replies share this change's success or failure and are settled together.
 	replies []*goakt.GrainReply
-	stage   writeStage
-	config  *settings.Values
+	// stage serializes persistence attempts and permits retry after failure.
+	stage writeStage
+	// config is the detached initial configuration to save; enablement-only changes leave it nil.
+	config *settings.Values
 }
 
 type recorded struct {
-	entry     *resident
+	// entry identifies the Companion whose persistence attempt is settling.
+	entry *companion
+	// operation must still match the current mutation before its relationship can be published.
 	operation *mutation
-	err       error
+	// err reports Settings save, relationship Commit or Flush failure; failure never publishes the target.
+	err error
 }
 
 func (operation *mutation) respond(current View, failure error) {
@@ -51,7 +63,7 @@ func (operation *mutation) respond(current View, failure error) {
 }
 
 func (owner *steward) create(gc *goakt.GrainContext, input Create) {
-	if err := companion.ValidateName(input.Name); err != nil {
+	if err := companions.ValidateName(input.Name); err != nil {
 		gc.Response(response{
 			err: err,
 		})
@@ -59,7 +71,7 @@ func (owner *steward) create(gc *goakt.GrainContext, input Create) {
 	}
 	if input.Initial.Validate() != nil {
 		gc.Response(response{
-			err: companion.ErrInvalid,
+			err: companions.ErrInvalid,
 		})
 		return
 	}
@@ -68,14 +80,14 @@ func (owner *steward) create(gc *goakt.GrainContext, input Create) {
 		owner.change(gc, entry, input, entry.mutation.next)
 		return
 	}
-	if entry != nil && (!entry.record.Removed || entry.starting != nil || entry.closing != nil || entry.creation.CreationID != "") {
+	if entry != nil && (!entry.relationship.Removed || entry.starting != nil || entry.closing != nil || entry.creation.CreationID != "") {
 		gc.Response(response{
-			err: companion.ErrConflict,
+			err: companions.ErrConflict,
 		})
 		return
 	}
-	next := companion.Companion{
-		ParentSessionID: owner.input.Parent.AgentID,
+	next := companions.Companion{
+		ParentSessionID: owner.parent.AgentID,
 		Name:            input.Name,
 		ChildSessionID:  session.SessionID(uuid.NewString()),
 		Revision:        1,
@@ -84,7 +96,7 @@ func (owner *steward) create(gc *goakt.GrainContext, input Create) {
 		Enabled:         input.Enabled,
 	}
 	if entry != nil {
-		next.Revision = entry.record.Revision + 1
+		next.Revision = entry.relationship.Revision + 1
 	}
 	if err := next.Validate(); err != nil {
 		gc.Response(response{
@@ -93,7 +105,7 @@ func (owner *steward) create(gc *goakt.GrainContext, input Create) {
 		return
 	}
 	if entry == nil {
-		entry = &resident{
+		entry = &companion{
 			phase: Stopped,
 		}
 		owner.entries[input.Name] = entry
@@ -103,13 +115,13 @@ func (owner *steward) create(gc *goakt.GrainContext, input Create) {
 
 func (owner *steward) configure(gc *goakt.GrainContext, input Configure) {
 	entry := owner.entries[input.Name]
-	if entry == nil || entry.record.Removed || entry.record.Revision != input.ExpectedRevision {
+	if entry == nil || entry.relationship.Removed || entry.relationship.Revision != input.ExpectedRevision {
 		gc.Response(response{
-			err: companion.ErrConflict,
+			err: companions.ErrConflict,
 		})
 		return
 	}
-	next := entry.record.Clone()
+	next := entry.relationship.Clone()
 	next.Revision++
 	next.Enabled = input.Enabled
 	owner.change(gc, entry, input, next)
@@ -117,20 +129,20 @@ func (owner *steward) configure(gc *goakt.GrainContext, input Configure) {
 
 func (owner *steward) remove(gc *goakt.GrainContext, input Remove) {
 	entry := owner.entries[input.Name]
-	if entry == nil || entry.record.Removed || entry.record.Revision != input.ExpectedRevision {
+	if entry == nil || entry.relationship.Removed || entry.relationship.Revision != input.ExpectedRevision {
 		gc.Response(response{
-			err: companion.ErrConflict,
+			err: companions.ErrConflict,
 		})
 		return
 	}
-	next := entry.record.Clone()
+	next := entry.relationship.Clone()
 	next.Revision++
 	next.Enabled = false
 	next.Removed = true
 	owner.change(gc, entry, input, next)
 }
 
-func (owner *steward) change(gc *goakt.GrainContext, entry *resident, input any, next companion.Companion) {
+func (owner *steward) change(gc *goakt.GrainContext, entry *companion, input any, next companions.Companion) {
 	encoded, err := json.Marshal(input)
 	if err != nil {
 		gc.Response(response{
@@ -146,7 +158,7 @@ func (owner *steward) change(gc *goakt.GrainContext, entry *resident, input any,
 		return
 	}
 	if operation == nil {
-		plan, failure := companion.NewRecord(next, entry.record.Revision)
+		plan, failure := companions.NewRecord(next, entry.relationship.Revision)
 		if failure != nil {
 			gc.Response(response{
 				err: failure,
@@ -178,11 +190,11 @@ func (owner *steward) change(gc *goakt.GrainContext, entry *resident, input any,
 	}
 	operation.stage = writeInFlight
 	system := gc.ActorSystem()
-	parent := owner.input.Parent
-	registry := owner.input.Registry
-	target := owner.input.Session
+	parent := owner.parent
+	registry := owner.registry
+	target := owner.session
 	plan := operation.plan
-	configuration := owner.input.Settings
+	configuration := owner.settings
 	err = gc.PipeToSelf(func() (any, error) {
 		// Once admitted, a caller timeout does not abandon a potentially committed write.
 		ctx := context.Background()
@@ -270,10 +282,10 @@ func (owner *steward) recorded(gc *goakt.GrainContext, result recorded) {
 		owner.finishClose()
 		return
 	}
-	previous := entry.record
-	entry.record = result.operation.next
+	previous := entry.relationship
+	entry.relationship = result.operation.next
 	entry.mutation = nil
-	if previous.ChildSessionID != entry.record.ChildSessionID || !previous.Enabled && entry.record.Enabled {
+	if previous.ChildSessionID != entry.relationship.ChildSessionID || !previous.Enabled && entry.relationship.Enabled {
 		entry.failure = nil
 		owner.resume(gc, entry)
 	} else {
@@ -285,9 +297,9 @@ func (owner *steward) recorded(gc *goakt.GrainContext, result recorded) {
 
 func (owner *steward) restart(gc *goakt.GrainContext, input Restart) {
 	entry := owner.entries[input.Name]
-	if entry == nil || entry.record.Revision != input.ExpectedRevision || entry.record.Removed || !entry.record.Enabled || entry.creation.CreationID != input.ExpectedCreationID {
+	if entry == nil || entry.relationship.Revision != input.ExpectedRevision || entry.relationship.Removed || !entry.relationship.Enabled || entry.creation.CreationID != input.ExpectedCreationID {
 		gc.Response(response{
-			err: companion.ErrConflict,
+			err: companions.ErrConflict,
 		})
 		return
 	}

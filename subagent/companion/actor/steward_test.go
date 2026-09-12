@@ -20,7 +20,7 @@ import (
 	sessionregistry "github.com/gorenx/goren/session/registry"
 	"github.com/gorenx/goren/settings"
 	settingsactor "github.com/gorenx/goren/settings/actor"
-	"github.com/gorenx/goren/subagent/companion"
+	companions "github.com/gorenx/goren/subagent/companion"
 	"github.com/gorenx/goren/systemprompt"
 	promptactor "github.com/gorenx/goren/systemprompt/actor"
 	"github.com/gorenx/goren/tools"
@@ -302,7 +302,7 @@ func (fixture *stewardship) open(t *testing.T) {
 	if route.Err != nil {
 		t.Fatal(route.Err)
 	}
-	endpoint, err := Open(t.Context(), fixture.system, Initialization{
+	endpoint, err := acceptSteward(t.Context(), fixture.system, start{
 		Parent:   fixture.input.Creation,
 		Registry: fixture.authority,
 		Session:  route.Target,
@@ -312,6 +312,7 @@ func (fixture *stewardship) open(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	awaitSteward(t, endpoint, Ready)
 	fixture.client = endpoint
 }
 
@@ -358,13 +359,13 @@ func TestStewardCreatesDisablesRestartsAndRecoversRemoval(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	records, err := companion.CompanionsFromEvents("parent", stored.Events)
+	records, err := companions.CompanionsFromEvents("parent", stored.Events)
 	if err != nil || len(records) != 1 || records[0].ChildSessionID != ready.Creation.AgentID {
 		t.Fatal("child started without durable intent")
 	}
 	if _, err := fixture.client.Create(t.Context(), Create{
 		Name: "reviewer",
-	}); !errors.Is(err, companion.ErrConflict) {
+	}); !errors.Is(err, companions.ErrConflict) {
 		t.Fatalf("duplicate creation: %v", err)
 	}
 	disabled, err := fixture.client.Configure(t.Context(), Configure{
@@ -380,7 +381,7 @@ func TestStewardCreatesDisablesRestartsAndRecoversRemoval(t *testing.T) {
 		Name:             "reviewer",
 		ExpectedRevision: ready.Companion.Revision,
 		Enabled:          true,
-	}); !errors.Is(err, companion.ErrConflict) {
+	}); !errors.Is(err, companions.ErrConflict) {
 		t.Fatalf("stale version accepted: %v", err)
 	}
 	if _, err := fixture.client.Configure(t.Context(), Configure{
@@ -413,9 +414,7 @@ func TestStewardCreatesDisablesRestartsAndRecoversRemoval(t *testing.T) {
 	}
 	awaitPhase(t, fixture.client, "reviewer", Stopped)
 	old := fixture.client
-	if err := old.Close(t.Context()); err != nil {
-		t.Fatal(err)
-	}
+	fixture.stopSteward(t)
 	if closed := request[agentactor.Closed](t, fixture.system, fixture.authority, agentregistry.CloseAgent{
 		Creation: fixture.input.Creation,
 	}); closed.Err != nil {
@@ -636,14 +635,21 @@ func TestStewardFailedStartupCanRestartAndCompanionCannotOwnSteward(t *testing.T
 		SessionID:  ready.Creation.AgentID,
 		CreationID: ready.Creation.CreationID,
 	})
-	if _, err := Open(t.Context(), fixture.system, Initialization{
+	recursive, err := acceptSteward(t.Context(), fixture.system, start{
 		Parent:   ready.Creation,
 		Registry: fixture.authority,
 		Session:  route.Target,
 		Creator:  fixture.creator,
 		Settings: fixture.creator.settings,
-	}); !errors.Is(err, agent.ErrRole) {
-		t.Fatalf("recursive Steward accepted: %v", err)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observed := awaitSteward(t, recursive, StartFailed); !errors.Is(observed.Err, agent.ErrRole) {
+		t.Fatalf("recursive Steward accepted: %+v", observed)
+	}
+	if err := recursive.Close(t.Context()); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -710,5 +716,60 @@ func TestStewardReenableSettlesCancelledStartupBeforeNewCreation(t *testing.T) {
 	})
 	if !errors.Is(obsolete.Err, agentregistry.ErrCreation) {
 		t.Fatalf("old creation remained admitted: %v", obsolete.Err)
+	}
+}
+
+// acceptSteward sends the same asynchronous start message as Installer.
+func acceptSteward(ctx context.Context, system goakt.ActorSystem, input start) (*Client, error) {
+	target, err := stewardRoute(ctx, system, input.Parent)
+	if err != nil {
+		return nil, err
+	}
+	result, err := ask[response](ctx, system, target, input)
+	if err != nil {
+		return nil, err
+	}
+	if result.err != nil {
+		return nil, result.err
+	}
+	return &Client{
+		system: system,
+		target: target,
+		parent: input.Parent,
+	}, nil
+}
+
+func awaitSteward(t *testing.T, sender *Client, expected Phase) Status {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for {
+		observed, err := sender.Status(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if observed.Phase == expected {
+			return observed
+		}
+		if observed.Phase == StartFailed && expected != StartFailed {
+			t.Fatalf("Steward recovery failed: %v", observed.Err)
+		}
+		select {
+		case <-tick.C:
+		case <-ctx.Done():
+			t.Fatalf("Steward never reached %s: %+v", expected, observed)
+		}
+	}
+}
+
+func (fixture *stewardship) stopSteward(t *testing.T) {
+	t.Helper()
+	if err := fixture.client.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.system.TellGrain(t.Context(), fixture.client.target, new(goakt.PoisonPill)); err != nil {
+		t.Fatal(err)
 	}
 }

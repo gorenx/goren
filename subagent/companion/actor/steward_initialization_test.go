@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorenx/goren/agent"
 	agentregistry "github.com/gorenx/goren/agent/registry"
 	sessionactor "github.com/gorenx/goren/session/actor"
 	sessionregistry "github.com/gorenx/goren/session/registry"
+	companions "github.com/gorenx/goren/subagent/companion"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
@@ -56,9 +56,7 @@ func TestStewardCloseDuringRecoveryDoesNotStartChildren(t *testing.T) {
 		t.Fatal(err)
 	}
 	previous := awaitPhase(t, fixture.client, "recovered", Ready)
-	if err := fixture.client.Close(t.Context()); err != nil {
-		t.Fatal(err)
-	}
+	fixture.stopSteward(t)
 	conversation := request[sessionregistry.Endpoint](t, fixture.system, fixture.sessions, sessionregistry.ResolveSession{
 		SessionID:  fixture.input.Creation.AgentID,
 		CreationID: fixture.input.Creation.CreationID,
@@ -86,22 +84,45 @@ func TestStewardCloseDuringRecoveryDoesNotStartChildren(t *testing.T) {
 	})
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	opened := make(chan error, 1)
-	go func() {
-		_, failure := Open(ctx, fixture.system, Initialization{
-			Parent:   fixture.input.Creation,
-			Registry: fixture.authority,
-			Session:  barrier,
-			Creator:  fixture.creator,
-			Settings: fixture.creator.settings,
-		})
-		opened <- failure
-	}()
+	endpoint, err := acceptSteward(ctx, fixture.system, start{
+		Parent:   fixture.input.Creation,
+		Registry: fixture.authority,
+		Session:  barrier,
+		Creator:  fixture.creator,
+		Settings: fixture.creator.settings,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.client = endpoint
+	awaitSteward(t, endpoint, Starting)
 	select {
 	case <-entered:
 	case <-ctx.Done():
 		t.Fatal("recovery did not reach Session read")
 	}
+
+	invalid := request[response](t, fixture.system, endpoint.target, start{
+		Parent:   fixture.input.Creation,
+		Registry: fixture.authority,
+		Session:  barrier,
+		Creator:  fixture.creator,
+	})
+	if !errors.Is(invalid.err, companions.ErrInvalid) {
+		t.Fatalf("invalid duplicate start accepted: %v", invalid.err)
+	}
+	// Duplicate acceptance must not issue a second blocked Session read.
+	repeated := request[response](t, fixture.system, endpoint.target, start{
+		Parent:   fixture.input.Creation,
+		Registry: fixture.authority,
+		Session:  barrier,
+		Creator:  fixture.creator,
+		Settings: fixture.creator.settings,
+	})
+	if repeated.err != nil {
+		t.Fatal(repeated.err)
+	}
+	awaitSteward(t, endpoint, Starting)
 	stale := *fixture.client
 	stale.parent.CreationID = "stale"
 	if err := stale.Close(ctx); !errors.Is(err, agentregistry.ErrCreation) {
@@ -110,14 +131,18 @@ func TestStewardCloseDuringRecoveryDoesNotStartChildren(t *testing.T) {
 	if err := fixture.client.Close(ctx); err != nil {
 		t.Fatalf("initializing Steward could not close: %v", err)
 	}
-	select {
-	case failure := <-opened:
-		if !errors.Is(failure, agent.ErrClosing) {
-			t.Fatalf("interrupted initialization = %v", failure)
-		}
-	case <-ctx.Done():
-		t.Fatal("close did not settle initialization")
+	awaitSteward(t, endpoint, Stopped)
+	rejected := request[response](t, fixture.system, endpoint.target, start{
+		Parent:   fixture.input.Creation,
+		Registry: fixture.authority,
+		Session:  barrier,
+		Creator:  fixture.creator,
+		Settings: fixture.creator.settings,
+	})
+	if !errors.Is(rejected.err, companions.ErrConflict) {
+		t.Fatalf("closed Steward restarted: %v", rejected.err)
 	}
+
 	items, err := fixture.client.List(ctx)
 	if err != nil || len(items) != 0 {
 		t.Fatalf("interrupted recovery adopted relationships: %+v, %v", items, err)
@@ -131,9 +156,10 @@ func TestStewardCloseDuringRecoveryDoesNotStartChildren(t *testing.T) {
 	if err := fixture.client.Close(ctx); err != nil {
 		t.Fatal("repeated close failed", err)
 	}
-	// Bind again before allowing the old transport reply to arrive. The reply
-	// belongs to the canceled initialization, never the new one.
-	endpoint, err := Open(ctx, fixture.system, Initialization{
+	// Stop the old Grain before starting recovery, as Installer does.
+	// The old transport reply cannot reach the new recovery operation.
+	fixture.stopSteward(t)
+	endpoint, err = acceptSteward(ctx, fixture.system, start{
 		Parent:   fixture.input.Creation,
 		Registry: fixture.authority,
 		Session:  conversation.Target,
@@ -144,6 +170,7 @@ func TestStewardCloseDuringRecoveryDoesNotStartChildren(t *testing.T) {
 		t.Fatal(err)
 	}
 	fixture.client = endpoint
+	awaitSteward(t, endpoint, Ready)
 	request[struct{}](t, fixture.system, barrier, releaseRead{})
 	restored := awaitPhase(t, fixture.client, "recovered", Ready)
 	if restored.Companion.ChildSessionID != previous.Companion.ChildSessionID || restored.Creation == previous.Creation {
@@ -153,30 +180,29 @@ func TestStewardCloseDuringRecoveryDoesNotStartChildren(t *testing.T) {
 
 func TestStewardCloseAfterInitializationFailure(t *testing.T) {
 	fixture := newStewardship(t)
-	if err := fixture.client.Close(t.Context()); err != nil {
-		t.Fatal(err)
-	}
+	fixture.stopSteward(t)
 	conversation := request[sessionregistry.Endpoint](t, fixture.system, fixture.sessions, sessionregistry.ResolveSession{
 		SessionID:  fixture.input.Creation.AgentID,
 		CreationID: fixture.input.Creation.CreationID,
 	})
 	invalid := fixture.input.Creation
 	invalid.CreationID = "unregistered"
-	_, err := Open(t.Context(), fixture.system, Initialization{
+	failed, err := acceptSteward(t.Context(), fixture.system, start{
 		Parent:   invalid,
 		Registry: fixture.authority,
 		Session:  conversation.Target,
 		Creator:  fixture.creator,
 		Settings: fixture.creator.settings,
 	})
-	if !errors.Is(err, agentregistry.ErrCreation) {
-		t.Fatal("invalid parent initialized Steward", err)
+	if err != nil {
+		t.Fatal(err)
 	}
-	failed := *fixture.client
-	failed.parent = invalid
+	if observed := awaitSteward(t, failed, StartFailed); !errors.Is(observed.Err, agentregistry.ErrCreation) {
+		t.Fatalf("invalid parent initialized Steward: %+v", observed)
+	}
 	if err := failed.Close(t.Context()); err != nil {
 		t.Fatal("failed initialization could not settle close", err)
 	}
 	// Cleanup closes the last binding, even though its initialization failed.
-	fixture.client = &failed
+	fixture.client = failed
 }

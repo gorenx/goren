@@ -8,20 +8,27 @@ import (
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
-	"github.com/gorenx/goren/subagent/companion"
+	companions "github.com/gorenx/goren/subagent/companion"
 	"github.com/gorenx/goren/subagent/tools/report"
 )
 
 type sendMessage struct {
-	ctx     context.Context
-	child   session.SessionID
+	// ctx carries the caller's cancellation and deadline for this ordinary delivery.
+	ctx context.Context
+	// child is the direct Companion SessionID whose current lifetime Steward resolves.
+	child session.SessionID
+	// message already has a stable ID and coordinator provenance.
 	message agentmessage.UserMessage
 }
 
 type reportMessage struct {
-	ctx        context.Context
-	child      agentregistry.Creation
-	message    agentmessage.UserMessage
+	// ctx bounds report delivery; canceling the wait does not retract committed input.
+	ctx context.Context
+	// child is the exact reporting lifetime whose direct parent relationship Steward verifies.
+	child agentregistry.Creation
+	// message contains the report with a stable ID and subagent-report provenance.
+	message agentmessage.UserMessage
+	// scheduling selects quiet Inject admission or next-step Steer admission.
 	scheduling report.Delivery
 }
 
@@ -29,7 +36,7 @@ type reportMessage struct {
 // confirms ordinary Inbox acceptance, not execution completion or Session Flush.
 func (sender *Client) SendMessage(ctx context.Context, child session.SessionID, content []agentmessage.ContentBlock) (agentmessage.MessageID, error) {
 	if sender == nil || ctx == nil || child == "" {
-		return "", companion.ErrInvalid
+		return "", companions.ErrInvalid
 	}
 	message, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
 		Content: content,
@@ -52,7 +59,7 @@ func (sender *Client) SendMessage(ctx context.Context, child session.SessionID, 
 // The caller supplies a trusted child Creation; the Steward verifies membership.
 func (sender *Client) Report(ctx context.Context, child agentregistry.Creation, output string, scheduling report.Delivery) (agentmessage.MessageID, error) {
 	if sender == nil || ctx == nil || child.AgentID == "" || child.CreationID == "" || (scheduling != report.Quiet && scheduling != report.NextStep) {
-		return "", companion.ErrInvalid
+		return "", companions.ErrInvalid
 	}
 	message, err := agentmessage.NewUserMessage(agentmessage.UserMessageInput{
 		Content: []agentmessage.ContentBlock{agentmessage.NewTextBlock(output)},

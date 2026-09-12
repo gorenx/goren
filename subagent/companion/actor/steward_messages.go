@@ -10,26 +10,31 @@ import (
 	loopactor "github.com/gorenx/goren/agentloop/actor"
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
-	"github.com/gorenx/goren/subagent/companion"
+	companions "github.com/gorenx/goren/subagent/companion"
 	"github.com/gorenx/goren/subagent/tools/report"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
 // delivery retains only an ordinary in-flight request, never task execution state.
 type delivery struct {
+	// cancel bounds identity checks and the Inbox request without retracting committed messages.
 	cancel context.CancelFunc
-	reply  *goakt.GrainReply
+	// reply awaits ordinary Inbox admission on behalf of the tool or Client caller.
+	reply *goakt.GrainReply
 }
 
 type delivered struct {
+	// operation identifies the delivery being removed from Steward's in-flight requests.
 	operation *delivery
+	// messageID confirms Inbox admission, not child completion or parent consumption of a report.
 	messageID agentmessage.MessageID
-	err       error
+	// err carries identity-check or ordinary delivery failure back to the caller.
+	err error
 }
 
-func (owner *steward) findChild(identifier session.SessionID) *resident {
+func (owner *steward) findChild(identifier session.SessionID) *companion {
 	for _, entry := range owner.entries {
-		if entry.record.ChildSessionID == identifier {
+		if entry.relationship.ChildSessionID == identifier {
 			return entry
 		}
 	}
@@ -44,7 +49,7 @@ func (owner *steward) sendMessage(gc *goakt.GrainContext, input sendMessage) {
 		})
 		return
 	}
-	if entry.phase != Ready || entry.record.Removed || !entry.record.Enabled {
+	if entry.phase != Ready || entry.relationship.Removed || !entry.relationship.Enabled {
 		gc.Response(response{
 			err: errors.New("companion: child is unavailable for new tasks"),
 		})
@@ -74,27 +79,27 @@ func (owner *steward) reportMessage(gc *goakt.GrainContext, input reportMessage)
 	switch input.scheduling {
 	case report.Quiet:
 		request = loopactor.Inject{
-			CreationID: owner.input.Parent.CreationID,
+			CreationID: owner.parent.CreationID,
 			Message:    input.message,
 		}
 	case report.NextStep:
 		request = loopactor.Steer{
-			CreationID: owner.input.Parent.CreationID,
+			CreationID: owner.parent.CreationID,
 			Message:    input.message,
 		}
 	default:
 		gc.Response(response{
-			err: companion.ErrInvalid,
+			err: companions.ErrInvalid,
 		})
 		return
 	}
-	owner.deliver(gc, input.ctx, input.child, owner.input.Parent, input.message, request)
+	owner.deliver(gc, input.ctx, input.child, owner.parent, input.message, request)
 }
 
 func (owner *steward) deliver(gc *goakt.GrainContext, ctx context.Context, child, target agentregistry.Creation, message agentmessage.UserMessage, input any) {
 	if ctx == nil {
 		gc.Response(response{
-			err: companion.ErrInvalid,
+			err: companions.ErrInvalid,
 		})
 		return
 	}
@@ -121,8 +126,8 @@ func (owner *steward) deliver(gc *goakt.GrainContext, ctx context.Context, child
 	}
 	owner.deliveries[operation] = struct{}{}
 	system := gc.ActorSystem()
-	authority := owner.input.Registry
-	parent := owner.input.Parent
+	authority := owner.registry
+	parent := owner.parent
 	err := gc.PipeToSelf(func() (any, error) {
 		result := delivered{
 			operation: operation,

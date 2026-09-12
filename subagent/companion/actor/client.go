@@ -9,7 +9,7 @@ import (
 	agentregistry "github.com/gorenx/goren/agent/registry"
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/settings"
-	"github.com/gorenx/goren/subagent/companion"
+	companions "github.com/gorenx/goren/subagent/companion"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
@@ -22,40 +22,57 @@ type ChildCreator interface {
 	Start(context.Context, agentregistry.Creation, agentregistry.Creation, string) (agentregistry.Ready, error)
 }
 
-// Initialization binds one parent lifetime and its existing capabilities.
-type Initialization struct {
-	Parent   agentregistry.Creation
+// start accepts a parent lifetime and recovers its relationships asynchronously.
+type start struct {
+	// Parent identifies the exact lifetime checked by subsequent management commands.
+	Parent agentregistry.Creation
+	// Registry is the Agent Registry endpoint for identity checks, readiness and child closure.
 	Registry *goakt.GrainIdentity
-	Session  *goakt.GrainIdentity
-	Creator  ChildCreator
+	// Session is the parent Session endpoint that reads and commits Companion relationships.
+	Session *goakt.GrainIdentity
+	// Creator borrows ordinary child creation; admitted requests must settle before returning.
+	Creator ChildCreator
+	// Settings owns named configurations and their persistence.
 	Settings settings.Settings
 }
 
 // Create fixes a new child's resolved first-creation configuration.
 type Create struct {
-	Name           string
+	// Name uniquely identifies the Companion within the current parent.
+	Name string
+	// SourceRevision identifies the selected creation policy, separately from relationship revision.
 	SourceRevision int64
-	Enabled        bool
-	Initial        settings.Values
+	// Enabled is the initial target; child startup requires confirmed relationship persistence.
+	Enabled bool
+	// Initial contains resolved explicit inheritance; the client freezes it before Settings persistence.
+	Initial settings.Values
 }
 
 // Configure conditionally changes whether an existing Companion is enabled.
 type Configure struct {
-	Name             string
+	// Name selects the Companion whose enablement target changes.
+	Name string
+	// ExpectedRevision rejects changes based on an outdated relationship.
 	ExpectedRevision int64
-	Enabled          bool
+	// Enabled is the new target; disabling rejects new work and drains current work.
+	Enabled bool
 }
 
 // Remove preserves a tombstone while closing the current Companion.
 type Remove struct {
-	Name             string
+	// Name selects the Companion to remove from this parent.
+	Name string
+	// ExpectedRevision must match the current relationship; removal remains in its log.
 	ExpectedRevision int64
 }
 
 // Restart rejects a stale management version or running lifetime.
 type Restart struct {
-	Name               string
-	ExpectedRevision   int64
+	// Name selects the Companion to restart within this parent.
+	Name string
+	// ExpectedRevision identifies the relationship on which this restart is based.
+	ExpectedRevision int64
+	// ExpectedCreationID is the observed child lifetime, or empty when none is retained.
 	ExpectedCreationID string
 }
 
@@ -73,60 +90,69 @@ const (
 	CloseFailed Phase = "close_failed"
 )
 
+// Status reports Steward preparation and shutdown independently of parent readiness.
+type Status struct {
+	// Phase describes Steward recovery or Companion support shutdown, independently of parent readiness.
+	Phase Phase
+	// Err retains the phase failure and can be non-nil even when the status query succeeds.
+	Err error
+}
+
 // View separates durable management facts from runtime lifecycle progress.
 // Err is an internal failure, not a public wire representation.
 type View struct {
-	// Persisted is false while the first relationship write is unconfirmed.
+	// Persisted confirms Session Flush; it is false before the first relationship write is confirmed.
 	Persisted bool
-	Companion companion.Companion
-	Creation  agentregistry.Creation
-	Phase     Phase
-	Err       error
+	// Companion is a detached relationship view and may contain the uncommitted first target.
+	Companion companions.Companion
+	// Creation is the current or unsettled child lifetime; empty means no lifetime is retained.
+	Creation agentregistry.Creation
+	// Phase describes child startup and closure, not whether its current Turn is busy.
+	Phase Phase
+	// Err contains management or child lifecycle failures for internal queries and boundary mapping.
+	Err error
 }
 
 // Client addresses a Steward with a fixed parent lifetime credential.
 type Client struct {
+	// system is borrowed for messaging through GoAkt Grain routes.
 	system goakt.ActorSystem
+	// target addresses this parent's Steward Grain.
 	target *goakt.GrainIdentity
+	// parent fixes the lifetime credential; a replacement Creation cannot reuse it.
 	parent agentregistry.Creation
 }
 
 type command struct {
+	// parent carries the exact lifetime checked before business dispatch.
 	parent agentregistry.Creation
-	input  any
+	// input holds a management, query or delivery message; type erasure stays at the Grain boundary.
+	input any
 }
 
 type listing struct{}
+type inspection struct{}
 type closing struct{}
 type response struct {
-	view      View
-	items     []View
+	// status contains recovery or shutdown progress and any retained lifecycle failure.
+	status Status
+	// view is the current Companion state returned by a single management command.
+	view View
+	// items contains the Companion views returned by a listing query.
+	items []View
+	// messageID identifies input accepted by the ordinary Inbox, not completed execution.
 	messageID agentmessage.MessageID
-	err       error
+	// err reports command failure; lifecycle failures from a status query belong to status.Err.
+	err error
 }
 
-// Open initializes management and recovers durable relationships. It does not
-// wait for child initialization. The parent must already be a ready ordinary Agent.
-func Open(ctx context.Context, system goakt.ActorSystem, input Initialization) (*Client, error) {
-	if ctx == nil || system == nil || input.Registry == nil || input.Session == nil || input.Creator == nil || input.Settings == nil || input.Parent.AgentID == "" || input.Parent.CreationID == "" {
-		return nil, companion.ErrInvalid
-	}
-	target, err := stewardRoute(ctx, system, input.Parent)
+// Status reads the manager's current preparation or shutdown result.
+func (sender *Client) Status(ctx context.Context) (Status, error) {
+	result, err := sender.request(ctx, inspection{})
 	if err != nil {
-		return nil, err
+		return Status{}, err
 	}
-	result, err := ask[response](ctx, system, target, input)
-	if err != nil {
-		return nil, err
-	}
-	if result.err != nil {
-		return nil, result.err
-	}
-	return &Client{
-		system: system,
-		target: target,
-		parent: input.Parent,
-	}, nil
+	return result.status, result.err
 }
 
 func stewardRoute(ctx context.Context, system goakt.ActorSystem, parent agentregistry.Creation) (*goakt.GrainIdentity, error) {
@@ -176,7 +202,7 @@ func (sender *Client) Close(ctx context.Context) error {
 
 func (sender *Client) request(ctx context.Context, input any) (response, error) {
 	if ctx == nil || sender == nil {
-		return response{}, companion.ErrInvalid
+		return response{}, companions.ErrInvalid
 	}
 	return ask[response](ctx, sender.system, sender.target, command{
 		parent: sender.parent,

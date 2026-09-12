@@ -11,7 +11,7 @@ import (
 	agentregistry "github.com/gorenx/goren/agent/registry"
 	sessionactor "github.com/gorenx/goren/session/actor"
 	sessionregistry "github.com/gorenx/goren/session/registry"
-	"github.com/gorenx/goren/subagent/companion"
+	companions "github.com/gorenx/goren/subagent/companion"
 	goakt "github.com/tochemey/goakt/v4/actor"
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
@@ -77,10 +77,8 @@ func faultRoute(t *testing.T, fixture *stewardship, input faultSetup) *goakt.Gra
 
 func (fixture *stewardship) reopenWith(t *testing.T, registry, conversation *goakt.GrainIdentity) {
 	t.Helper()
-	if err := fixture.client.Close(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	endpoint, err := Open(t.Context(), fixture.system, Initialization{
+	fixture.stopSteward(t)
+	endpoint, err := acceptSteward(t.Context(), fixture.system, start{
 		Parent:   fixture.input.Creation,
 		Registry: registry,
 		Session:  conversation,
@@ -90,6 +88,7 @@ func (fixture *stewardship) reopenWith(t *testing.T, registry, conversation *goa
 	if err != nil {
 		t.Fatal(err)
 	}
+	awaitSteward(t, endpoint, Ready)
 	fixture.client = endpoint
 }
 
@@ -215,13 +214,13 @@ func TestStewardCloseFailureKeepsAdmissionClosedUntilCleanupSettles(t *testing.T
 	}); !errors.Is(err, agent.ErrClosing) {
 		t.Fatalf("closing reopened admission: %v", err)
 	}
-	if _, err := Open(t.Context(), fixture.system, Initialization{
+	if _, err := acceptSteward(t.Context(), fixture.system, start{
 		Parent:   fixture.input.Creation,
 		Registry: port,
 		Session:  conversation.Target,
 		Creator:  fixture.creator,
 		Settings: fixture.creator.settings,
-	}); !errors.Is(err, companion.ErrConflict) {
+	}); !errors.Is(err, companions.ErrConflict) {
 		t.Fatalf("initialization discarded unsettled cleanup: %v", err)
 	}
 	if err := fixture.client.Close(t.Context()); err != nil {
