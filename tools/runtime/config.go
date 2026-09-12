@@ -2,6 +2,7 @@ package toolruntime
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"sort"
 
@@ -20,7 +21,7 @@ type Tool struct {
 	Policies   execution.Policies
 }
 
-// Merge resolves Session schemas by name and policy fields by explicit presence.
+// Merge combines uniquely named schemas and resolves policy fields by explicit presence.
 // Registry input remains unchanged; returned schemas own their parameter bytes.
 func Merge(input toolregistry.Configuration) ([]Tool, error) {
 	if len(input.Custom.ProviderIDs) != 0 {
@@ -31,13 +32,15 @@ func Merge(input toolregistry.Configuration) ([]Tool, error) {
 		Custom: input.Custom.Clone(),
 	}
 	// schemas maps a canonical tool name to its selected schema; a Session entry
-	// replaces the global value before enablement and visibility policy is applied.
+	// must have a distinct name before enablement and visibility policy is applied.
 	schemas := make(map[string]llm.ToolSchema)
-	for _, entry := range captured.Global.Schemas {
-		schemas[entry.Name] = entry
-	}
-	for _, entry := range captured.Custom.Schemas {
-		schemas[entry.Name] = entry
+	for _, catalog := range []toolregistry.Catalog{captured.Global, captured.Custom} {
+		for _, entry := range catalog.Schemas {
+			if _, found := schemas[entry.Name]; found {
+				return nil, fmt.Errorf("tools: duplicate tool schema %q", entry.Name)
+			}
+			schemas[entry.Name] = entry
+		}
 	}
 	for name := range captured.Custom.Policies {
 		if _, exists := schemas[name]; !exists {

@@ -111,7 +111,8 @@ func (owner *Registry) ConfigureTool(name string, configuration tools.Config) er
 	return nil
 }
 
-// RegisterSource replaces a complete global source. Names cannot collide across sources.
+// RegisterSource replaces a complete global source. Schema names cannot collide
+// with other sources or with additions in Sessions inheriting global tools.
 func (owner *Registry) RegisterSource(name string, input Catalog) error {
 	if strings.TrimSpace(name) == "" || strings.TrimSpace(name) != name {
 		return errors.New("tools: source name is required")
@@ -140,6 +141,13 @@ func (owner *Registry) RegisterSource(name string, input Catalog) error {
 			}
 		}
 	}
+	for _, selected := range owner.sessions {
+		if selected.InheritGlobal {
+			if err := rejectSchemaConflicts(captured, selected); err != nil {
+				return err
+			}
+		}
+	}
 	err = assignVersions(&captured, owner.sources[name])
 	if err != nil {
 		return err
@@ -154,8 +162,9 @@ func (owner *Registry) RegisterSource(name string, input Catalog) error {
 // RemoveSource withdraws its schemas and policies together; runtimes decide how to apply it.
 func (owner *Registry) RemoveSource(name string) { delete(owner.sources, name) }
 
-// ConfigureSession replaces Session values. InheritGlobal retains global
-// inheritance and field overrides; otherwise the catalog is a complete selection.
+// ConfigureSession replaces Session values. InheritGlobal retains global tools
+// with distinct schema additions and policy overrides; otherwise the catalog is
+// a complete selection.
 func (owner *Registry) ConfigureSession(identifier session.SessionID, input Catalog) error {
 	if identifier == "" {
 		return errors.New("tools: Session identity is required")
@@ -166,6 +175,13 @@ func (owner *Registry) ConfigureSession(identifier session.SessionID, input Cata
 	captured, err := snapshotCatalog(input)
 	if err != nil {
 		return err
+	}
+	if captured.InheritGlobal {
+		for _, source := range owner.sources {
+			if err := rejectSchemaConflicts(source, captured); err != nil {
+				return err
+			}
+		}
 	}
 	if !captured.InheritGlobal && len(captured.MCP) == 0 {
 		for name := range captured.Policies {
@@ -339,6 +355,21 @@ func assignVersions(input *Catalog, previous Catalog) error {
 				incoming.Version++
 			}
 			break
+		}
+	}
+	return nil
+}
+
+// rejectSchemaConflicts checks registrations that coexist in one Session.
+// Updating flags for an existing name does not register another schema.
+func rejectSchemaConflicts(left, right Catalog) error {
+	names := make(map[string]struct{}, len(left.Schemas))
+	for _, entry := range left.Schemas {
+		names[entry.Name] = struct{}{}
+	}
+	for _, entry := range right.Schemas {
+		if _, found := names[entry.Name]; found {
+			return fmt.Errorf("tools: duplicate tool schema %q", entry.Name)
 		}
 	}
 	return nil

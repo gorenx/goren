@@ -8,7 +8,7 @@ import (
 	toolregistry "github.com/gorenx/goren/tools/registry"
 )
 
-func TestSessionSchemaInheritsGlobalProviderIdentity(t *testing.T) {
+func TestSessionPolicyPreservesGlobalProviderIdentity(t *testing.T) {
 	input := toolregistry.Configuration{
 		Global: toolregistry.Catalog{
 			Schemas: []llm.ToolSchema{testSchema("read")},
@@ -17,11 +17,9 @@ func TestSessionSchemaInheritsGlobalProviderIdentity(t *testing.T) {
 			},
 		},
 		Custom: toolregistry.Catalog{
-			Schemas: []llm.ToolSchema{
-				{
-					Name:        "read",
-					Description: "custom description",
-					Parameters:  []byte(`{"type":"object"}`),
+			Policies: map[string]toolregistry.Policy{
+				"read": {
+					Visible: new(false),
 				},
 			},
 		},
@@ -31,7 +29,7 @@ func TestSessionSchemaInheritsGlobalProviderIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(entries) != 1 ||
-		entries[0].Schema.Description != "custom description" ||
+		entries[0].Schema.Description != "read" || entries[0].Visible ||
 		entries[0].ProviderID != "remote-connection" {
 		t.Fatalf("effective=%+v", entries)
 	}
