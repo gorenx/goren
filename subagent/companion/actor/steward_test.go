@@ -131,6 +131,13 @@ func (fixture *childFixture) Start(ctx context.Context, parent, child agentregis
 	})
 }
 
+func (*childFixture) Resolve(_ context.Context, _ agentregistry.Creation, policy companions.Config, values settings.Values) (settings.Values, error) {
+	if policy.Inherit.Model || policy.Inherit.Prompt || policy.Inherit.Tools == companions.InheritAllTools || policy.Inherit.MCP {
+		return settings.Values{}, errors.New("test: inherited configuration requires production Creator")
+	}
+	return values.Clone(), nil
+}
+
 func (*configurationFixture) ApplyPrompt(context.Context, string, systemprompt.Config) error {
 	return errors.New("test: unexpected global prompt update")
 }

@@ -20,6 +20,7 @@ import (
 // The configuration name is a Settings reference, independent of Session identity.
 type ChildCreator interface {
 	Start(context.Context, agentregistry.Creation, agentregistry.Creation, string) (agentregistry.Ready, error)
+	Resolve(context.Context, agentregistry.Creation, companions.Config, settings.Values) (settings.Values, error)
 }
 
 // start accepts a parent lifetime and recovers its relationships asynchronously.
@@ -155,7 +156,11 @@ func (sender *Client) Status(ctx context.Context) (Status, error) {
 	return result.status, result.err
 }
 
-func stewardRoute(ctx context.Context, system goakt.ActorSystem, parent agentregistry.Creation) (*goakt.GrainIdentity, error) {
+func stewardRoute(
+	ctx context.Context,
+	system goakt.ActorSystem,
+	parent agentregistry.Creation,
+) (*goakt.GrainIdentity, error) {
 	return goakt.GrainOf[*steward](ctx, system, string(parent.AgentID)+".steward",
 		goakt.WithLongLivedGrain(),
 		goakt.WithGrainReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))),

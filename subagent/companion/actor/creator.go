@@ -32,6 +32,8 @@ type Creator struct {
 	Registry *goakt.GrainIdentity
 	// Tools provides installed schemas and execution policies, not live MCP tools.
 	Tools *goakt.GrainIdentity
+	// Model provides the parent's currently adopted model selection for explicit inheritance.
+	Model *goakt.GrainIdentity
 	// Settings supplies the child's already-resolved independent configuration.
 	Settings settings.Settings
 	// Storage distinguishes first creation from restoration of the same Session.
@@ -39,7 +41,11 @@ type Creator struct {
 }
 
 // Start settles any submitted creation even when preparation is later cancelled.
-func (owner *Creator) Start(ctx context.Context, parent, child agentregistry.Creation, configuration string) (agentregistry.Ready, error) {
+func (owner *Creator) Start(
+	ctx context.Context,
+	parent, child agentregistry.Creation,
+	configuration string,
+) (agentregistry.Ready, error) {
 	if owner == nil || ctx == nil || owner.System == nil || owner.Registry == nil ||
 		owner.Tools == nil || owner.Settings == nil || owner.Storage == nil || configuration == "" {
 		return agentregistry.Ready{}, companions.ErrInvalid
@@ -65,7 +71,7 @@ func (owner *Creator) Start(ctx context.Context, parent, child agentregistry.Cre
 		return agentregistry.Ready{}, fmt.Errorf("%w: named Agent configuration is absent", companions.ErrInvalid)
 	}
 	initial = initial.Clone()
-	selection, err := owner.selectTools(ctx, initial)
+	selection, err := owner.selectTools(ctx, parent, initial)
 	if err != nil {
 		return agentregistry.Ready{}, err
 	}
@@ -110,8 +116,18 @@ func (owner *Creator) Start(ctx context.Context, parent, child agentregistry.Cre
 	return ready, nil
 }
 
-func (owner *Creator) selectTools(ctx context.Context, initial settings.Values) (toolregistry.Catalog, error) {
+func (owner *Creator) selectTools(
+	ctx context.Context,
+	parent agentregistry.Creation,
+	initial settings.Values,
+) (toolregistry.Catalog, error) {
 	available, err := ask[catalogactor.Configuration](ctx, owner.System, owner.Tools, catalogactor.ReadConfiguration{})
+	if err != nil {
+		return toolregistry.Catalog{}, err
+	}
+	parentTools, err := ask[catalogactor.Configuration](ctx, owner.System, owner.Tools, catalogactor.ReadConfiguration{
+		SessionID: parent.AgentID,
+	})
 	if err != nil {
 		return toolregistry.Catalog{}, err
 	}
@@ -130,18 +146,25 @@ func (owner *Creator) selectTools(ctx context.Context, initial settings.Values) 
 		if name == report.Schema().Name {
 			return toolregistry.Catalog{}, errors.New("companion: report tool name is reserved")
 		}
-		index := slices.IndexFunc(available.Value.Global.Schemas, func(entry llm.ToolSchema) bool {
+		source := parentTools.Value.Global
+		index := slices.IndexFunc(source.Schemas, func(entry llm.ToolSchema) bool {
 			return entry.Name == name
 		})
+		if index < 0 {
+			source = available.Value.Global
+			index = slices.IndexFunc(source.Schemas, func(entry llm.ToolSchema) bool {
+				return entry.Name == name
+			})
+		}
 		if index < 0 && len(selected.MCP) == 0 {
 			return toolregistry.Catalog{}, fmt.Errorf("companion: tool %q is not installed", name)
 		}
-		policy := available.Value.Global.Policies[name]
+		policy := source.Policies[name]
 		if index >= 0 {
-			definition := available.Value.Global.Schemas[index]
+			definition := source.Schemas[index]
 			definition.Version = 0
 			selected.Schemas = append(selected.Schemas, definition)
-			if identifier := available.Value.Global.ProviderIDs[name]; identifier != "" {
+			if identifier := source.ProviderIDs[name]; identifier != "" {
 				selected.ProviderIDs[name] = identifier
 			}
 		}

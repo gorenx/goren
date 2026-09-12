@@ -18,7 +18,9 @@ import (
 	"github.com/gorenx/goren/llm/modelconfig"
 	"github.com/gorenx/goren/mcpclient"
 	"github.com/gorenx/goren/settings"
+	companions "github.com/gorenx/goren/subagent/companion"
 	"github.com/gorenx/goren/subagent/tools/control"
+	"github.com/gorenx/goren/systemprompt"
 	promptactor "github.com/gorenx/goren/systemprompt/actor"
 	"github.com/gorenx/goren/tools"
 	toolregistry "github.com/gorenx/goren/tools/registry"
@@ -76,39 +78,43 @@ func (remote *creatorMCP) ServeHTTP(writer http.ResponseWriter, incoming *http.R
 	fmt.Fprintf(writer, `{"jsonrpc":"2.0","id":%s,"result":%s}`, envelope.ID, result)
 }
 
+func prepareCreatorModels(t *testing.T, current *stewardship) {
+	if err := runtimeactor.Install(current.system, &creatorQuestions{}); err != nil {
+		t.Fatal(err)
+	}
+	models, err := goakt.GrainOf[*llmactor.Grain](t.Context(), current.system, "creator-models",
+		goakt.WithLongLivedGrain(),
+		goakt.WithGrainReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := modelconfig.NewCatalog(modelconfig.Definition{
+		Default: llm.CallConfig{
+			Provider: "shared",
+			Model:    "parent-default",
+		},
+		Providers: []modelconfig.Provider{{
+			ID: "shared",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result := request[llmactor.Completion](t, current.system, models, llmactor.InitializeModels{
+		Catalog: catalog,
+	}); result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	current.input.ModelConfig = models
+}
+
 func TestCreatorRestoresNamedConfigurationThroughOrdinaryOwners(t *testing.T) {
 	remote := &creatorMCP{}
 	server := httptest.NewServer(remote)
 	t.Cleanup(server.Close)
 	fixture, _, _ := messagingFixture(t, func(current *stewardship) tool.Providers {
-		if err := runtimeactor.Install(current.system, &creatorQuestions{}); err != nil {
-			t.Fatal(err)
-		}
-		models, err := goakt.GrainOf[*llmactor.Grain](t.Context(), current.system, "creator-models",
-			goakt.WithLongLivedGrain(),
-			goakt.WithGrainReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))),
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		catalog, err := modelconfig.NewCatalog(modelconfig.Definition{
-			Default: llm.CallConfig{
-				Provider: "shared",
-				Model:    "parent-default",
-			},
-			Providers: []modelconfig.Provider{{
-				ID: "shared",
-			}},
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if result := request[llmactor.Completion](t, current.system, models, llmactor.InitializeModels{
-			Catalog: catalog,
-		}); result.Err != nil {
-			t.Fatal(result.Err)
-		}
-		current.input.ModelConfig = models
+		prepareCreatorModels(t, current)
 		return nil
 	})
 	starter := &Creator{
@@ -292,5 +298,76 @@ func TestCreatorRestoresNamedConfigurationThroughOrdinaryOwners(t *testing.T) {
 				t.Fatalf("preparation failure reserved a child: %+v", missing)
 			}
 		})
+	}
+}
+
+func TestCreatorInheritsCurrentParentConfigurationForDefaultCompanion(t *testing.T) {
+	remote := &creatorMCP{}
+	server := httptest.NewServer(remote)
+	t.Cleanup(server.Close)
+	fixture, _, _ := messagingFixture(t, func(current *stewardship) tool.Providers {
+		prepareCreatorModels(t, current)
+		return nil
+	})
+	connection := mcpclient.Config{
+		ServerName: "docs",
+		Transport:  "streamable-http",
+		URL:        server.URL,
+	}
+	fixture.input.Tools = &toolregistry.Catalog{
+		Schemas: []llm.ToolSchema{control.MessageSchema(), control.ListSchema()},
+		MCP:     []mcpclient.Config{connection},
+	}
+	fixture.input.Prompt = &systemprompt.Config{
+		Persona: "parent persona",
+	}
+	starter := &Creator{
+		System:   fixture.system,
+		Registry: fixture.authority,
+		Tools:    fixture.input.ToolsRegistry,
+		Model:    fixture.input.ModelConfig,
+		Settings: fixture.creator.settings,
+		Storage:  fixture.creator.storage,
+	}
+	if _, err := starter.Settings.UpdateAgent(t.Context(), "review-template", 0, settings.Values{}); err != nil {
+		t.Fatal(err)
+	}
+	policy := companions.Config{
+		Enabled:       true,
+		Configuration: "review-template",
+		Inherit: companions.Inheritance{
+			Model:  true,
+			Prompt: true,
+			Tools:  companions.InheritAllTools,
+			MCP:    true,
+		},
+	}
+	if _, err := starter.Settings.UpdateCompanion(t.Context(), "reviewer", 0, policy); err != nil {
+		t.Fatal(err)
+	}
+	installer, sender, parentInput := installParent(t, fixture, fixture.authority, starter)
+	awaitInstallation(t, fixture, installer, parentInput.Creation, Ready)
+	child := awaitPhase(t, sender, "reviewer", Ready)
+	view, err := starter.Settings.Describe(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := view.Target.Agents[child.Companion.Configuration]
+	if saved.Model.Provider != "shared" || saved.Model.Model != "parent-default" ||
+		saved.Prompts["default"].Persona == nil || *saved.Prompts["default"].Persona != "parent persona" ||
+		len(saved.MCP) != 1 || saved.MCP["docs"].Connection.URL != server.URL || len(saved.Tools) != 3 ||
+		saved.Tools["send_message"].Enabled == nil || !*saved.Tools["send_message"].Enabled ||
+		saved.Tools["mcp_docs_read"].Visible == nil || !*saved.Tools["mcp_docs_read"].Visible {
+		t.Fatalf("explicit inheritance did not freeze adopted values: %+v", saved)
+	}
+	if remote.opens.Load() != 2 {
+		t.Fatal("parent and child did not acquire independent Session connections")
+	}
+	if _, err := starter.Resolve(t.Context(), parentInput.Creation, policy, settings.Values{
+		Tools: map[string]tools.Config{
+			"send_message": {},
+		},
+	}); err == nil {
+		t.Fatal("dedicated tool duplicated an inherited name")
 	}
 }

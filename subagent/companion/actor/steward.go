@@ -27,6 +27,8 @@ const (
 // companion is one managed Companion, with its relationship, current child
 // lifetime and unsettled management operations. Steward serializes its changes.
 type companion struct {
+	// candidate identifies an automatic policy whose preparation failed before it could be recorded.
+	candidate companions.Companion
 	// relationship is the confirmed Companion relationship; mutation owns the first uncommitted target.
 	relationship companions.Companion
 	// mutation retains an unsettled management change and its frozen retry input.
@@ -54,6 +56,8 @@ type recovery struct {
 type loaded struct {
 	// entries contains relationships projected from the parent's own log, without runtime routes.
 	entries []companions.Companion
+	// defaults contains Settings policies fixed after the relationship read, including preparation failures.
+	defaults []automatic
 	// err reports parent identity, log read or relationship projection failure.
 	err error
 	// operation identifies the recovery that produced this result and fences late completions.
@@ -204,7 +208,12 @@ func (owner *steward) receiveCommand(gc *goakt.GrainContext, input command) {
 }
 
 func (owner *steward) start(gc *goakt.GrainContext, input start) {
-	if input.Creator == nil || input.Settings == nil || input.Registry == nil || input.Session == nil || input.Parent.AgentID == "" || input.Parent.CreationID == "" {
+	if input.Creator == nil ||
+		input.Settings == nil ||
+		input.Registry == nil ||
+		input.Session == nil ||
+		input.Parent.AgentID == "" ||
+		input.Parent.CreationID == "" {
 		gc.Response(response{
 			err: companions.ErrInvalid,
 		})
@@ -258,6 +267,7 @@ func (owner *steward) prepare(gc *goakt.GrainContext, input start) error {
 			failure = agent.ErrRole
 		}
 		var entries []companions.Companion
+		var defaults []automatic
 		if failure == nil {
 			snapshot, readErr := ask[sessionactor.View](ctx, system, input.Session, sessionactor.Read{
 				CreationID: input.Parent.CreationID,
@@ -270,8 +280,16 @@ func (owner *steward) prepare(gc *goakt.GrainContext, input start) error {
 				entries, failure = companions.CompanionsFromEvents(input.Parent.AgentID, snapshot.Snapshot.Events)
 			}
 		}
+		if failure == nil {
+			view, readErr := input.Settings.Describe(ctx)
+			failure = readErr
+			if failure == nil {
+				defaults = defaultPolicies(ctx, input.Parent, entries, view, input.Creator)
+			}
+		}
 		return loaded{
 			entries:   entries,
+			defaults:  defaults,
 			err:       failure,
 			operation: operation,
 		}, nil
@@ -309,6 +327,9 @@ func (owner *steward) loaded(gc *goakt.GrainContext, result loaded) {
 		owner.entries[entry.Name] = retained
 		owner.reconcile(gc, retained)
 	}
+	for _, candidate := range result.defaults {
+		owner.installDefault(gc, candidate)
+	}
 }
 
 func (owner *steward) status() Status {
@@ -337,6 +358,8 @@ func (entry *companion) view() View {
 	relationship := entry.relationship
 	if relationship.Name == "" && entry.mutation != nil {
 		relationship = entry.mutation.next
+	} else if relationship.Name == "" {
+		relationship = entry.candidate
 	}
 	failure := entry.failure
 	if entry.mutation != nil && entry.mutation.failure != nil {

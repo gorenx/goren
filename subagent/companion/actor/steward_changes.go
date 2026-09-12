@@ -80,25 +80,19 @@ func (owner *steward) create(gc *goakt.GrainContext, input Create) {
 		owner.change(gc, entry, input, entry.mutation.next)
 		return
 	}
-	if entry != nil && (!entry.relationship.Removed || entry.starting != nil || entry.closing != nil || entry.creation.CreationID != "") {
+	if entry != nil &&
+		entry.relationship.Name != "" &&
+		(!entry.relationship.Removed ||
+			entry.starting != nil ||
+			entry.closing != nil ||
+			entry.creation.CreationID != "") {
 		gc.Response(response{
 			err: companions.ErrConflict,
 		})
 		return
 	}
-	next := companions.Companion{
-		ParentSessionID: owner.parent.AgentID,
-		Name:            input.Name,
-		ChildSessionID:  session.SessionID(uuid.NewString()),
-		Revision:        1,
-		SourceRevision:  input.SourceRevision,
-		Configuration:   "companion-" + uuid.NewString(),
-		Enabled:         input.Enabled,
-	}
-	if entry != nil {
-		next.Revision = entry.relationship.Revision + 1
-	}
-	if err := next.Validate(); err != nil {
+	next, err := newRelationship(owner.parent.AgentID, entry, input)
+	if err != nil {
 		gc.Response(response{
 			err: err,
 		})
@@ -111,6 +105,22 @@ func (owner *steward) create(gc *goakt.GrainContext, input Create) {
 		owner.entries[input.Name] = entry
 	}
 	owner.change(gc, entry, input, next)
+}
+
+func newRelationship(parent session.SessionID, previous *companion, input Create) (companions.Companion, error) {
+	next := companions.Companion{
+		ParentSessionID: parent,
+		Name:            input.Name,
+		ChildSessionID:  session.SessionID(uuid.NewString()),
+		Revision:        1,
+		SourceRevision:  input.SourceRevision,
+		Configuration:   "companion-" + uuid.NewString(),
+		Enabled:         input.Enabled,
+	}
+	if previous != nil {
+		next.Revision = previous.relationship.Revision + 1
+	}
+	return next, next.Validate()
 }
 
 func (owner *steward) configure(gc *goakt.GrainContext, input Configure) {
@@ -185,6 +195,10 @@ func (owner *steward) change(gc *goakt.GrainContext, entry *companion, input any
 	}
 	entry.mutation = operation
 	operation.replies = append(operation.replies, reply)
+	owner.writeChange(gc, entry, operation)
+}
+
+func (owner *steward) writeChange(gc *goakt.GrainContext, entry *companion, operation *mutation) {
 	if operation.stage == writeInFlight {
 		return
 	}
@@ -195,7 +209,7 @@ func (owner *steward) change(gc *goakt.GrainContext, entry *companion, input any
 	target := owner.session
 	plan := operation.plan
 	configuration := owner.settings
-	err = gc.PipeToSelf(func() (any, error) {
+	err := gc.PipeToSelf(func() (any, error) {
 		// Once admitted, a caller timeout does not abandon a potentially committed write.
 		ctx := context.Background()
 		accepted, failure := ask[agentregistry.Completion](ctx, system, registry, agentregistry.CheckAdmission{
@@ -219,7 +233,9 @@ func (owner *steward) change(gc *goakt.GrainContext, entry *companion, input any
 					Barrier:    committed.Result.Barrier,
 				})
 				failure = errors.Join(flushErr, durable.Err)
-				if failure == nil && (durable.Barrier.SessionID != parent.AgentID || durable.Barrier.NextSeq < committed.Result.Barrier.NextSeq) {
+				if failure == nil &&
+					(durable.Barrier.SessionID != parent.AgentID ||
+						durable.Barrier.NextSeq < committed.Result.Barrier.NextSeq) {
 					failure = errors.New("companion: relationship durability is unconfirmed")
 				}
 			}
