@@ -2,6 +2,8 @@ package runtimeactor_test
 
 import (
 	"context"
+	"encoding/json"
+	"github.com/gorenx/goren/agentmessage"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -96,6 +98,45 @@ func TestRuntimeRebindsProviderWithoutChangingSchemaOrActorIdentity(t *testing.T
 		first.opens.Load() != 1 {
 		t.Fatalf("initial binding: definitions=%+v address=%+v opens=%d", before, address, first.opens.Load())
 	}
+	run := func(identifier agentmessage.CallID) {
+		t.Helper()
+		prepared := ask[runtimeactor.CallResult](t, system, target, runtimeactor.PrepareCall{
+			CreationID: "creation",
+			Context:    t.Context(),
+			Input: tools.ToolExecutionInput{
+				SessionID: "agent",
+				CallID:    identifier,
+				Name:      toolaskuser.Name,
+				Arguments: json.RawMessage(`{"questions":[{"id":"q","question":"Continue?"}]}`),
+			},
+		})
+		if prepared.Err != nil || prepared.Stage != tools.ScheduledDispatch {
+			t.Fatalf("prepare: %+v", prepared)
+		}
+		dispatched := ask[runtimeactor.CallResult](t, system, target, runtimeactor.DispatchCall{
+			CreationID: "creation",
+			CallID:     identifier,
+		})
+		if dispatched.Err != nil {
+			t.Fatal(dispatched.Err)
+		}
+		finalized := ask[runtimeactor.CallResult](t, system, target, runtimeactor.FinalizeCall{
+			CreationID: "creation",
+			CallID:     identifier,
+		})
+		if finalized.Err != nil || finalized.Result == nil || finalized.Result.Failed() {
+			t.Fatalf("finalize: %+v", finalized)
+		}
+		released := ask[runtimeactor.Completion](t, system, target, runtimeactor.ReleaseCall{
+			CreationID: "creation",
+			CallID:     identifier,
+		})
+		if released.Err != nil {
+			t.Fatal(released.Err)
+		}
+	}
+	run("first-call")
+	run("repeated-call")
 	refresh := func(identifier string) runtimeactor.Definitions {
 		return ask[runtimeactor.Definitions](t, system, target, runtimeactor.RefreshConfiguration{
 			CreationID: "creation",
@@ -115,6 +156,7 @@ func TestRuntimeRebindsProviderWithoutChangingSchemaOrActorIdentity(t *testing.T
 		second.opens.Load() != 1 {
 		t.Fatalf("replacement=%+v first opens/closes=%d/%d second opens=%d", after, first.opens.Load(), first.closes.Load(), second.opens.Load())
 	}
+	run("replacement-call")
 	if before.Value.Schemas[0].Version != after.Value.Schemas[0].Version {
 		t.Fatal("Provider replacement changed model schema version")
 	}
@@ -148,6 +190,7 @@ func TestRuntimeRebindsProviderWithoutChangingSchemaOrActorIdentity(t *testing.T
 		second.closes.Load() != 1 {
 		t.Fatalf("binding recovery=%+v opens=%d old closes=%d", recovered, third.opens.Load(), second.closes.Load())
 	}
+	run("recovered-call")
 	closed := ask[runtimeactor.Completion](t, system, target, closing)
 	if closed.Err != nil || third.closes.Load() != 1 {
 		t.Fatalf("close=%+v count=%d", closed, third.closes.Load())

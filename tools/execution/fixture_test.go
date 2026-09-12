@@ -143,7 +143,7 @@ type directBodies map[string]tools.Executor
 func (bodies directBodies) Invoke(ctx context.Context, input tools.Invocation) (tools.BodyResult, error) {
 	return input.Run(ctx, bodies[input.Name]), nil
 }
-func testScheduler(t *testing.T, policies Policies, definitions ...tools.ToolDefinition) *Scheduler {
+func testScheduler(t *testing.T, definitions ...tools.ToolDefinition) *Scheduler {
 	t.Helper()
 	descriptions := make([]tools.Descriptor, 0, len(definitions))
 	bodies := make(directBodies, len(definitions))
@@ -151,7 +151,7 @@ func testScheduler(t *testing.T, policies Policies, definitions ...tools.ToolDef
 		descriptions = append(descriptions, definition.Describe())
 		bodies[definition.Name] = definition.Executor
 	}
-	coordinator, err := NewScheduler(descriptions, policies, bodies)
+	coordinator, err := NewScheduler(descriptions, bodies)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,9 +159,9 @@ func testScheduler(t *testing.T, policies Policies, definitions ...tools.ToolDef
 }
 
 // executeCall drives the production Call protocol for tests with no interactive approver.
-func executeCall(t *testing.T, coordinator *Scheduler, ctx context.Context, input tools.ToolExecutionInput) tools.ToolExecutionResult {
+func executeCall(t *testing.T, coordinator *Scheduler, ctx context.Context, input tools.ToolExecutionInput, policies Policies) tools.ToolExecutionResult {
 	t.Helper()
-	current, err := coordinator.PrepareCall(ctx, input)
+	current, err := coordinator.PrepareCall(ctx, input, policies)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -352,7 +352,6 @@ func (owner *Runtime) newToolClient(gc *goakt.GrainContext) *toolClient {
 	return &toolClient{
 		system:     gc.ActorSystem(),
 		runtime:    gc.Self(),
-		directory:  owner.registry,
 		agentID:    owner.agentID,
 		creationID: owner.creationID,
 		timeout:    owner.replyTimeout,

@@ -10,6 +10,7 @@ import (
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/mcpclient"
 	"github.com/gorenx/goren/session"
+	"github.com/gorenx/goren/tools/execution"
 	catalogactor "github.com/gorenx/goren/tools/registry/actor"
 	toolruntime "github.com/gorenx/goren/tools/runtime"
 	goakt "github.com/tochemey/goakt/v4/actor"
@@ -17,7 +18,7 @@ import (
 )
 
 // Runtime schedules one Agent's tool initialization and cleanup. Business state
-// and failure recovery belong to toolruntime.Runtime; this actor never starts another actor.
+// and failure recovery belong to toolruntime.Toolset; this actor never starts another actor.
 type Runtime struct {
 	// actors maps tool names to this Runtime's exact activation and cleanup responsibility.
 	// Failed initialization or close retains the entry; successful removal deletes it.
@@ -27,7 +28,10 @@ type Runtime struct {
 	creationID string
 	agentID    session.SessionID
 	// collection owns applied tool membership and replacement progress.
-	collection *toolruntime.Runtime
+	collection *toolruntime.Toolset
+	// scheduler retains compiled contracts until the next configuration attempt.
+	// Per-call policy pipelines and mutable state remain with execution.Call.
+	scheduler *execution.Scheduler
 	// Registry routing and request limits belong to this initialized lifetime.
 	registry     *goakt.GrainIdentity
 	replyTimeout time.Duration
@@ -123,7 +127,7 @@ func (owner *Runtime) OnReceive(gc *goakt.GrainContext) {
 			return
 		}
 		settings := input.operation.initialization
-		business, err := toolruntime.NewRuntime(settings.AgentID)
+		business, err := toolruntime.NewToolset(settings.AgentID)
 		if err != nil {
 			owner.finish(input.operation, err)
 			return
@@ -153,19 +157,7 @@ func (owner *Runtime) OnReceive(gc *goakt.GrainContext) {
 						return err
 					}
 				}
-				configuration, err := directory.Read(ctx, settings.AgentID)
-				if err != nil {
-					return err
-				}
-				definitions := append(configuration.Global.MCP, configuration.Custom.MCP...)
-				if err := peers.reconcile(ctx, definitions); err != nil {
-					return err
-				}
-				configuration.Global, err = peers.catalog(configuration.Global)
-				if err != nil {
-					return err
-				}
-				return business.Initialize(ctx, configuration, instances)
+				return owner.applyConfiguration(ctx, directory, instances)
 			},
 		)
 	case completed:

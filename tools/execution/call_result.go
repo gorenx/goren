@@ -9,13 +9,7 @@ import (
 	"github.com/gorenx/goren/tools"
 )
 
-// resultProcessor owns post-execute policy, definition finalization, and the
-// immutable final result Event.
-type resultProcessor struct {
-	dispatcher *dispatcher
-}
-
-func (processor *resultProcessor) post(
+func (current *Call) post(
 	requestContext context.Context,
 	toolCall callExecution,
 	entry *tools.Contract,
@@ -39,7 +33,7 @@ func (processor *resultProcessor) post(
 	if err != nil {
 		return nil, err
 	}
-	return processor.applyPostDecision(
+	return current.applyPostDecision(
 		toolCall,
 		entry,
 		detached,
@@ -47,7 +41,7 @@ func (processor *resultProcessor) post(
 	)
 }
 
-func (processor *resultProcessor) applyPostDecision(
+func (current *Call) applyPostDecision(
 	toolCall callExecution,
 	entry *tools.Contract,
 	outcome tools.ToolExecutionResult,
@@ -79,7 +73,7 @@ func (processor *resultProcessor) applyPostDecision(
 				Name: toolCall.Name,
 			}
 		}
-		replaced, err := processor.dispatcher.success(
+		replaced, err := current.success(
 			toolCall,
 			entry,
 			selected.Value,
@@ -119,7 +113,7 @@ func (processor *resultProcessor) applyPostDecision(
 	}
 }
 
-func (processor *resultProcessor) finish(
+func (current *Call) finishResult(
 	requestContext context.Context,
 	toolCall callExecution,
 	outcome tools.ToolExecutionResult,

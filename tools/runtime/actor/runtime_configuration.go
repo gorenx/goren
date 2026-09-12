@@ -48,39 +48,15 @@ func (owner *Runtime) receiveConfiguration(gc *goakt.GrainContext) bool {
 		}
 		owner.request = current
 		owner.changed = false
-		business := owner.collection
+		owner.scheduler = nil
 		directory, err := catalogactor.NewClient(gc.ActorSystem(), owner.registry, owner.replyTimeout)
 		if err != nil {
 			owner.finish(current, err)
 			return true
 		}
 		instances := owner.newToolClient(gc)
-		peers := owner.connections
-		agentID := owner.agentID
 		owner.schedule(gc, current, func(ctx context.Context) error {
-			configuration, err := directory.Read(ctx, agentID)
-			if err != nil {
-				return err
-			}
-			definitions := append(configuration.Global.MCP, configuration.Custom.MCP...)
-			if err := peers.reconcile(ctx, definitions); err != nil {
-				return err
-			}
-			if err := peers.refresh(ctx); err != nil {
-				return err
-			}
-			configuration.Global, err = peers.catalog(configuration.Global)
-			if err != nil {
-				return err
-			}
-			if _, err := business.Apply(ctx, configuration, instances); err != nil {
-				return err
-			}
-			applied, err := business.Snapshot()
-			if err != nil {
-				return err
-			}
-			return peers.retire(ctx, applied.ProviderIDs)
+			return owner.applyConfiguration(ctx, directory, instances)
 		})
 	case CancelConfiguration:
 		if input.CreationID == owner.creationID &&
@@ -168,4 +144,30 @@ func (owner *Watcher) notify(rc *goakt.ReceiveContext) {
 			logger.Error(failure)
 		}
 	})
+}
+
+// applyConfiguration is shared by initialization and refresh. Registry is read
+// once; the same captured input drives MCP discovery and tool membership. The
+// caller retains the Runtime operation until all resource cleanup is confirmed.
+func (owner *Runtime) applyConfiguration(ctx context.Context, directory *catalogactor.Client, instances *toolClient) error {
+	configuration, err := directory.Read(ctx, owner.agentID)
+	if err != nil {
+		return err
+	}
+	definitions := append(configuration.Global.MCP, configuration.Custom.MCP...)
+	if err := owner.connections.reconcile(ctx, definitions); err != nil {
+		return err
+	}
+	configuration.Global, err = owner.connections.catalog(configuration.Global)
+	if err != nil {
+		return err
+	}
+	if _, err := owner.collection.Apply(ctx, configuration, instances); err != nil {
+		return err
+	}
+	applied, err := owner.collection.Snapshot()
+	if err != nil {
+		return err
+	}
+	return owner.connections.retire(ctx, applied.ProviderIDs)
 }

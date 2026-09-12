@@ -601,12 +601,7 @@ func TestRuntimeRecoveryInstallsMCPAddedAfterFailedToolUpdate(t *testing.T) {
 	if err := startClient(t, system, sender, t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	hidden := false
-	selection.Policies = map[string]toolregistry.Policy{
-		definition.Name: {
-			Visible: &hidden,
-		},
-	}
+	selection.Schemas[0].Description = "Changed tool implementation"
 	installed.closeFailure.Store(true)
 	// Restore cleanup admission even if an assertion aborts this test.
 	t.Cleanup(func() { installed.closeFailure.Store(false) })

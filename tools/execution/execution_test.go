@@ -217,14 +217,14 @@ func TestExecutionPipelineOrderAndDetachedResultEvent(t *testing.T) {
 			agentmessage.NewTextBlock(string(value)),
 		}, nil
 	})
-	coordinator := testScheduler(t, state.policies, definition)
+	coordinator := testScheduler(t, definition)
 	outcome := executeCall(t, coordinator,
 		context.Background(),
 		tools.ToolExecutionInput{
 			CallID:    "call-1",
 			Name:      "pipeline",
 			Arguments: json.RawMessage(`{"value":"ok"}`),
-		},
+		}, state.policies,
 	)
 	if outcome.Failed() || resultText(t, outcome) != `{"value":"ok"}` {
 		t.Fatalf("pipeline outcome = %#v", outcome)
@@ -276,7 +276,7 @@ func TestExecuteMiddlewareReceivesReadOnlyCanonicalSuccess(t *testing.T) {
 		}),
 	}
 	state := newToolsFixture(t, mutation)
-	coordinator := testScheduler(t, state.policies, objectTool(
+	coordinator := testScheduler(t, objectTool(
 		"sealed",
 		"",
 		executorStub(passThroughBody),
@@ -287,7 +287,7 @@ func TestExecuteMiddlewareReceivesReadOnlyCanonicalSuccess(t *testing.T) {
 			CallID:    "sealed-1",
 			Name:      "sealed",
 			Arguments: json.RawMessage(`{"value":"original"}`),
-		},
+		}, state.policies,
 	)
 	succeeded, matches := outcome.(*tools.ToolExecutionSuccess)
 	if !matches || string(succeeded.Value) != `{"value":"original"}` ||
@@ -360,7 +360,7 @@ func TestDeferredContextsPrecedeExecuteAndPostContexts(t *testing.T) {
 		}),
 	}
 	state := newToolsFixture(t, executePolicy, postPolicy)
-	coordinator := testScheduler(t, state.policies, objectTool(
+	coordinator := testScheduler(t, objectTool(
 		"contexts",
 		"",
 		executorStub(func(
@@ -377,7 +377,7 @@ func TestDeferredContextsPrecedeExecuteAndPostContexts(t *testing.T) {
 			CallID:    "contexts-1",
 			Name:      "contexts",
 			Arguments: json.RawMessage(`{}`),
-		},
+		}, state.policies,
 	)
 	contexts := outcome.AdditionalContextMessages()
 	actualIDs := make([]agentmessage.MessageID, 0, len(contexts))
@@ -396,7 +396,7 @@ func TestDeferredContextsPrecedeExecuteAndPostContexts(t *testing.T) {
 
 func TestFinishMaterializesNilStagedResult(t *testing.T) {
 	state := newToolsFixture(t)
-	coordinator := testScheduler(t, state.policies, objectTool(
+	coordinator := testScheduler(t, objectTool(
 		"staged",
 		"",
 		executorStub(passThroughBody),
@@ -408,12 +408,15 @@ func TestFinishMaterializesNilStagedResult(t *testing.T) {
 			CallID:    "",
 			Name:      "staged",
 			Arguments: json.RawMessage(`{}`),
-		},
+		}, state.policies,
 	)
 	if err != nil || preparation.Stage != tools.ScheduledFinalResult {
 		t.Fatalf("preparation = %#v, error = %v", preparation, err)
 	}
-	outcome := scheduler.finish(preparation.Execution, nil)
+	outcome := (&Call{
+		scheduler:   scheduler,
+		preparation: preparation,
+	}).finish(nil)
 	if !outcome.Failed() || !strings.Contains(resultText(t, outcome), "staged result is nil") {
 		t.Fatalf("nil staged result = %#v", outcome)
 	}
@@ -441,7 +444,7 @@ func TestSchedulerConsumesEachPreparedStageOnce(t *testing.T) {
 		return nil, false
 	})
 	state := newToolsFixture(t)
-	coordinator := testScheduler(t, state.policies, definition)
+	coordinator := testScheduler(t, definition)
 	scheduler := coordinator
 	preparation, err := scheduler.prepare(
 		context.Background(),
@@ -449,28 +452,40 @@ func TestSchedulerConsumesEachPreparedStageOnce(t *testing.T) {
 			CallID:    "single-use-1",
 			Name:      "single-use-stage",
 			Arguments: json.RawMessage(`{}`),
-		},
+		}, state.policies,
 	)
 	if err != nil || preparation.Stage != tools.ScheduledDispatch {
 		t.Fatalf("preparation = %#v, error = %v", preparation, err)
 	}
-	dispatched, err := scheduler.dispatch(preparation.Execution)
+	dispatched, err := (&Call{
+		scheduler:   scheduler,
+		preparation: preparation,
+	}).dispatchBody()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := scheduler.dispatch(preparation.Execution); err == nil ||
+	if _, err := (&Call{
+		scheduler:   scheduler,
+		preparation: preparation,
+	}).dispatchBody(); err == nil ||
 		!strings.Contains(err.Error(), "not prepared for dispatch") {
 		t.Fatalf("second Dispatch error = %v", err)
 	}
-	finalOutcome, err := scheduler.finalize(
-		preparation.Execution,
+	finalOutcome, err := (&Call{
+		scheduler:   scheduler,
+		preparation: preparation,
+	}).finalize(
+
 		dispatched.Result,
 	)
 	if err != nil || finalOutcome.Failed() {
 		t.Fatalf("final outcome = %#v, error = %v", finalOutcome, err)
 	}
-	if _, err := scheduler.finalize(
-		preparation.Execution,
+	if _, err := (&Call{
+		scheduler:   scheduler,
+		preparation: preparation,
+	}).finalize(
+
 		dispatched.Result,
 	); err == nil || !strings.Contains(err.Error(), "not prepared") {
 		t.Fatalf("second Finalize error = %v", err)
@@ -486,14 +501,11 @@ func TestSchedulerConsumesEachPreparedStageOnce(t *testing.T) {
 
 func TestExecutionFailuresAreCanonical(t *testing.T) {
 	state := newToolsFixture(t)
-	unknown := executeCall(t, testScheduler(t, state.policies),
-		context.Background(),
-		tools.ToolExecutionInput{
-			CallID:    "unknown-1",
-			Name:      "absent",
-			Arguments: json.RawMessage(`{}`),
-		},
-	)
+	unknown := executeCall(t, testScheduler(t), context.Background(), tools.ToolExecutionInput{
+		CallID:    "unknown-1",
+		Name:      "absent",
+		Arguments: json.RawMessage(`{}`),
+	}, state.policies)
 	if !unknown.Failed() || !strings.Contains(resultText(t, unknown), "unknown tool") {
 		t.Fatalf("unknown outcome = %#v", unknown)
 	}
@@ -507,14 +519,14 @@ func TestExecutionFailuresAreCanonical(t *testing.T) {
 			return json.RawMessage(`"wrong"`), nil
 		}),
 	)
-	coordinator := testScheduler(t, state.policies, invalid)
+	coordinator := testScheduler(t, invalid)
 	invalidOutcome := executeCall(t, coordinator,
 		context.Background(),
 		tools.ToolExecutionInput{
 			CallID:    "invalid-1",
 			Name:      "invalid-output",
 			Arguments: json.RawMessage(`{}`),
-		},
+		}, state.policies,
 	)
 	if !invalidOutcome.Failed() ||
 		!strings.Contains(resultText(t, invalidOutcome), "invalid output") {
@@ -545,7 +557,7 @@ func TestCallerCancellationSurvivesMiddlewareContextReplacement(t *testing.T) {
 	state := newToolsFixture(t, dispatchPolicy)
 	started := make(chan struct{})
 	settled := make(chan struct{})
-	coordinator := testScheduler(t, state.policies, objectTool(
+	coordinator := testScheduler(t, objectTool(
 		"cancellable",
 		"",
 		executorStub(func(
@@ -567,7 +579,7 @@ func TestCallerCancellationSurvivesMiddlewareContextReplacement(t *testing.T) {
 				CallID:    "cancel-1",
 				Name:      "cancellable",
 				Arguments: json.RawMessage(`{}`),
-			},
+			}, state.policies,
 		)
 	}()
 	<-started
@@ -613,7 +625,7 @@ func TestFinalizerRunsOnceAndClassifierFailsClosed(t *testing.T) {
 	) bool {
 		panic("classifier failure")
 	})
-	coordinator := testScheduler(t, state.policies, definition)
+	coordinator := testScheduler(t, definition)
 	if mode := coordinator.ExecutionMode(tools.ToolExecutionInput{
 		Name:      "finalized",
 		Arguments: json.RawMessage(`{}`),
@@ -626,7 +638,7 @@ func TestFinalizerRunsOnceAndClassifierFailsClosed(t *testing.T) {
 			CallID:    "final-1",
 			Name:      "finalized",
 			Arguments: json.RawMessage(`{}`),
-		},
+		}, state.policies,
 	)
 	success, matches := outcome.(*tools.ToolExecutionSuccess)
 	if !matches || outcome.Failed() || resultText(t, outcome) != "final" ||

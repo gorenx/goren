@@ -35,7 +35,7 @@ func (coordinator *Scheduler) requestApproval(prepared preparation) (preparation
 	if err != nil {
 		return finalPreparation(original, errorResult(err)), nil
 	}
-	reply, err := invokeBody(coordinator.dispatcher.bodies, ctx, tools.Invocation{
+	reply, err := invokeBody(coordinator.bodies, ctx, tools.Invocation{
 		CallID:     agentmessage.CallID(uuid.NewString()),
 		RootCallID: original.RootCallID,
 		Name:       approval.ServiceName,

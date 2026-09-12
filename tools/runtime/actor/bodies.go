@@ -5,32 +5,43 @@ import (
 	"errors"
 	"time"
 
-	"github.com/gorenx/goren/tools/execution"
+	"github.com/gorenx/goren/session"
+
 	catalogactor "github.com/gorenx/goren/tools/registry/actor"
 
 	"github.com/gorenx/goren/tools"
-	toolruntime "github.com/gorenx/goren/tools/runtime"
 	"github.com/gorenx/goren/tools/tool"
 	toolactor "github.com/gorenx/goren/tools/tool/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
-// Scheduler captures only confirmed tool lifetimes and their settled descriptors.
-// The caller drains every execution before changing or closing those lifetimes.
-func (endpoint *toolClient) Scheduler(
-	ctx context.Context,
-	snapshot toolruntime.Snapshot,
-	policies execution.Policies,
-) (*execution.Scheduler, error) {
+// bodies retains prepared revisions, never Actor addresses.
+// Each invocation resolves its name through Registry; Execute rejects replacement
+// revisions that differ from the description used for policy preparation.
+// Waiting ignores caller cancellation so only the ToolActor can confirm body exit.
+type bodies struct {
+	system   goakt.ActorSystem
+	agentID  session.SessionID
+	registry *goakt.GrainIdentity
+	timeout  time.Duration
+	// revisions maps each prepared tool name to its committed revision.
+	// The revision is checked during Execute so a replacement cannot receive a call
+	// prepared against the old descriptor; this map does not cache Actor addresses.
+	revisions map[string]tool.Revision
+}
+
+// describe captures committed revisions for later invocation. The caller compiles
+// these descriptors and owns their lifetime; this adapter does not cache them.
+func (endpoint *bodies) describe(ctx context.Context, names []string) ([]tools.Descriptor, error) {
 	// revisions maps tool names to the committed revisions described below;
 	// execution must still target that work after policy preparation.
-	revisions := make(map[string]tool.Revision, len(snapshot.Names))
-	descriptions := make([]tools.Descriptor, 0, len(snapshot.Names))
-	for _, name := range snapshot.Names {
-		payload, err := endpoint.request(ctx, endpoint.directory, catalogactor.FindTool{
+	revisions := make(map[string]tool.Revision, len(names))
+	descriptions := make([]tools.Descriptor, 0, len(names))
+	for _, name := range names {
+		payload, err := endpoint.system.AskGrain(ctx, endpoint.registry, catalogactor.FindTool{
 			AgentID: endpoint.agentID,
 			Name:    name,
-		})
+		}, endpoint.timeout)
 		if err != nil {
 			return nil, err
 		}
@@ -38,7 +49,7 @@ func (endpoint *toolClient) Scheduler(
 		if !valid || !address.Found || address.Actor == nil {
 			return nil, errors.New("tools: execution has no registered ToolActor")
 		}
-		payload, err = endpoint.request(ctx, address.Actor, toolactor.Describe{CreationID: address.CreationID})
+		payload, err = endpoint.system.AskGrain(ctx, address.Actor, toolactor.Describe{CreationID: address.CreationID}, endpoint.timeout)
 		if err != nil {
 			return nil, err
 		}
@@ -55,30 +66,8 @@ func (endpoint *toolClient) Scheduler(
 		revisions[name] = description.Revision
 		descriptions = append(descriptions, description.Descriptor)
 	}
-	return execution.NewScheduler(
-		descriptions,
-		policies,
-		&bodies{
-			system:    endpoint.system,
-			registry:  endpoint.directory,
-			timeout:   endpoint.timeout,
-			revisions: revisions,
-		},
-	)
-}
-
-// bodies retains prepared revisions, never Actor addresses.
-// Each invocation resolves its name through Registry; Execute rejects replacement
-// revisions that differ from the description used for policy preparation.
-// Waiting ignores caller cancellation so only the ToolActor can confirm body exit.
-type bodies struct {
-	system   goakt.ActorSystem
-	registry *goakt.GrainIdentity
-	timeout  time.Duration
-	// revisions maps each prepared tool name to its committed revision.
-	// The revision is checked during Execute so a replacement cannot receive a call
-	// prepared against the old descriptor; this map does not cache Actor addresses.
-	revisions map[string]tool.Revision
+	endpoint.revisions = revisions
+	return descriptions, nil
 }
 
 func (endpoint *bodies) Invoke(ctx context.Context, input tools.Invocation) (tools.BodyResult, error) {

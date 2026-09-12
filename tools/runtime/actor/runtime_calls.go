@@ -19,6 +19,7 @@ type invocation struct {
 }
 
 type callCompleted struct {
+	scheduler  *execution.Scheduler
 	invocation *invocation
 	business   *execution.Call
 	result     CallResult
@@ -79,6 +80,9 @@ func (owner *Runtime) receiveCalls(gc *goakt.GrainContext) bool {
 		}
 		if current.reply == nil {
 			return true
+		}
+		if input.scheduler != nil {
+			owner.scheduler = input.scheduler
 		}
 		if input.business != nil {
 			current.business = input.business
@@ -145,11 +149,17 @@ func (owner *Runtime) prepareCall(gc *goakt.GrainContext, input PrepareCall) {
 	owner.calls[input.Input.CallID] = current
 	owner.policyRequest = current
 	input.Input.Arguments = append([]byte(nil), input.Input.Arguments...)
-	instances := owner.newToolClient(gc)
+	retained := owner.scheduler
+	destination := &bodies{
+		system:   gc.ActorSystem(),
+		registry: owner.registry,
+		agentID:  owner.agentID,
+		timeout:  owner.replyTimeout,
+	}
 	policies := snapshot.Policies[input.Input.Name]
 	err = gc.PipeToSelf(func() (payload any, failure error) {
 		defer recoverCall(current, &payload)
-		coordinator, failure := instances.Scheduler(ctx, snapshot, policies)
+		coordinator, failure := prepareScheduler(ctx, retained, destination, snapshot.Names)
 		if failure != nil {
 			return callCompleted{
 				invocation: current,
@@ -158,7 +168,7 @@ func (owner *Runtime) prepareCall(gc *goakt.GrainContext, input PrepareCall) {
 				},
 			}, nil
 		}
-		business, failure := coordinator.PrepareCall(ctx, input.Input)
+		business, failure := coordinator.PrepareCall(ctx, input.Input, policies)
 		result := CallResult{
 			Err: failure,
 		}
@@ -168,6 +178,7 @@ func (owner *Runtime) prepareCall(gc *goakt.GrainContext, input PrepareCall) {
 		return callCompleted{
 			invocation: current,
 			business:   business,
+			scheduler:  coordinator,
 			result:     result,
 		}, nil
 	})
@@ -237,4 +248,23 @@ func recoverCall(current *invocation, payload *any) {
 			},
 		}
 	}
+}
+
+// prepareScheduler reuses settled contracts. Runtime adopts the result through
+// its completion message; execution captures policies separately for each Call.
+func prepareScheduler(ctx context.Context, retained *execution.Scheduler, destination *bodies, names []string) (*execution.Scheduler, error) {
+	if ctx == nil {
+		return nil, errors.New("tools: execution context is required")
+	}
+	if ctx.Err() != nil {
+		return nil, context.Cause(ctx)
+	}
+	if retained != nil {
+		return retained, nil
+	}
+	descriptions, err := destination.describe(ctx, names)
+	if err != nil {
+		return nil, err
+	}
+	return execution.NewScheduler(descriptions, destination)
 }

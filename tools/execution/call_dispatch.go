@@ -11,12 +11,6 @@ import (
 	"github.com/gorenx/goren/tools"
 )
 
-// dispatcher owns the around-dispatch policy, Tool body invocation, and
-// canonical successful-output normalization.
-type dispatcher struct {
-	bodies Invoker
-}
-
 // DeliveryError denotes an unconfirmed tool invocation, not a body failure.
 // The caller must retain execution responsibility instead of committing a result.
 type DeliveryError struct {
@@ -28,7 +22,7 @@ func (failure *DeliveryError) Error() string {
 }
 func (failure *DeliveryError) Unwrap() error { return failure.Cause }
 
-func (bodyDispatcher *dispatcher) dispatch(
+func (current *Call) invoke(
 	requestContext context.Context,
 	toolCall callExecution,
 	entry *tools.Contract,
@@ -41,7 +35,7 @@ func (bodyDispatcher *dispatcher) dispatch(
 		requestContext,
 		tools.NewExecuteRequest(cloneExecution(toolCall)),
 		executeTerminal{
-			dispatcher:    bodyDispatcher,
+			call:          current,
 			callerContext: requestContext,
 			toolCall:      toolCall,
 			entry:         entry,
@@ -50,7 +44,7 @@ func (bodyDispatcher *dispatcher) dispatch(
 	if err != nil {
 		return nil, err
 	}
-	normalized, err := bodyDispatcher.normalize(
+	normalized, err := current.normalize(
 		toolCall,
 		entry,
 		dispatchOutcome.Result,
@@ -73,7 +67,7 @@ func (bodyDispatcher *dispatcher) dispatch(
 }
 
 type executeTerminal struct {
-	dispatcher    *dispatcher
+	call          *Call
 	callerContext context.Context
 	toolCall      callExecution
 	entry         *tools.Contract
@@ -88,7 +82,7 @@ func (terminal executeTerminal) Execute(
 			"tools: execute Middleware delegated with a nil Context",
 		)
 	}
-	outcome, err := terminal.dispatcher.executeBody(
+	outcome, err := terminal.call.executeBody(
 		terminal.callerContext,
 		chainContext,
 		terminal.toolCall,
@@ -99,7 +93,7 @@ func (terminal executeTerminal) Execute(
 	}, err
 }
 
-func (bodyDispatcher *dispatcher) executeBody(
+func (current *Call) executeBody(
 	requestContext context.Context,
 	chainContext context.Context,
 	toolCall callExecution,
@@ -131,7 +125,7 @@ func (bodyDispatcher *dispatcher) executeBody(
 		}), nil
 	}
 	state.markBodyInvoked()
-	body, err := invokeBody(bodyDispatcher.bodies, fusedContext, toolCall.Invocation())
+	body, err := invokeBody(current.scheduler.bodies, fusedContext, toolCall.Invocation())
 	if err != nil {
 		return nil, &DeliveryError{
 			Cause: err,
@@ -141,7 +135,7 @@ func (bodyDispatcher *dispatcher) executeBody(
 	if body.Err != nil {
 		return errorResult(body.Err), nil
 	}
-	outcome, err := bodyDispatcher.success(toolCall, entry, body.Value)
+	outcome, err := current.success(toolCall, entry, body.Value)
 	if err != nil {
 		return errorResult(err), nil
 	}
@@ -151,7 +145,7 @@ func (bodyDispatcher *dispatcher) executeBody(
 	}, nil
 }
 
-func (bodyDispatcher *dispatcher) normalize(
+func (current *Call) normalize(
 	toolCall callExecution,
 	entry *tools.Contract,
 	candidate tools.ToolExecutionResult,
@@ -164,7 +158,7 @@ func (bodyDispatcher *dispatcher) normalize(
 		if canonical.execution == toolCall.state {
 			return tools.CloneResult(canonical)
 		}
-		return bodyDispatcher.normalizeAuthoredSuccess(
+		return current.normalizeAuthoredSuccess(
 			toolCall,
 			entry,
 			canonical.ToolExecutionSuccess,
@@ -172,7 +166,7 @@ func (bodyDispatcher *dispatcher) normalize(
 	}
 	succeeded, succeededMatches := candidate.(*tools.ToolExecutionSuccess)
 	if succeededMatches {
-		return bodyDispatcher.normalizeAuthoredSuccess(
+		return current.normalizeAuthoredSuccess(
 			toolCall,
 			entry,
 			succeeded,
@@ -188,7 +182,7 @@ func (bodyDispatcher *dispatcher) normalize(
 	)
 }
 
-func (bodyDispatcher *dispatcher) normalizeAuthoredSuccess(
+func (current *Call) normalizeAuthoredSuccess(
 	toolCall callExecution,
 	entry *tools.Contract,
 	authored *tools.ToolExecutionSuccess,
@@ -201,7 +195,7 @@ func (bodyDispatcher *dispatcher) normalizeAuthoredSuccess(
 			Name: toolCall.Name,
 		}
 	}
-	normalized, err := bodyDispatcher.success(
+	normalized, err := current.success(
 		toolCall,
 		entry,
 		authored.Value,
@@ -215,7 +209,7 @@ func (bodyDispatcher *dispatcher) normalizeAuthoredSuccess(
 	)
 }
 
-func (bodyDispatcher *dispatcher) success(
+func (current *Call) success(
 	toolCall callExecution,
 	entry *tools.Contract,
 	candidate json.RawMessage,

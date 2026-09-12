@@ -1,10 +1,12 @@
 package toolruntime
 
 import (
+	"bytes"
 	"context"
 	"errors"
 
 	"github.com/google/uuid"
+	toolregistry "github.com/gorenx/goren/tools/registry"
 	"github.com/gorenx/goren/tools/tool"
 )
 
@@ -37,39 +39,48 @@ const (
 
 // Update owns one replacement and its cleanup obligations, never Registry state.
 type Update struct {
-	tools     []Tool
-	revision  tool.Revision
-	removed   []string
-	added     []string
-	phase     updatePhase
-	next      int
-	attempted int
-	failure   error
+	// configuration is the exact source input that produced tools. It remains
+	// paired with this operation across retries and is adopted only on success.
+	configuration toolregistry.Configuration
+	tools         []Tool
+	// preparations contains only new or changed implementations; policy changes
+	// are adopted with the target collection without reopening Providers.
+	preparations []Tool
+	revision     tool.Revision
+	removed      []string
+	added        []string
+	phase        updatePhase
+	next         int
+	attempted    int
+	failure      error
 }
 
 // NewUpdate captures a replacement under a fresh operation identity.
-func NewUpdate(entries []Tool, previous []string) *Update {
+func NewUpdate(input toolregistry.Configuration, entries []Tool, previous []Tool) *Update {
 	pending := &Update{
-		tools:    cloneTools(entries),
-		revision: tool.Revision(uuid.NewString()),
+		configuration: cloneConfiguration(input),
+		tools:         cloneTools(entries),
+		revision:      tool.Revision(uuid.NewString()),
 	}
-	// names maps each requested tool name to true; absent keys are not in the replacement.
-	names := make(map[string]bool, len(entries))
-	// old maps each previously active tool name to true, identifying newly added work.
-	old := make(map[string]bool, len(previous))
-	for _, name := range previous {
-		old[name] = true
+	names := make(map[string]struct{}, len(entries))
+	old := make(map[string]Tool, len(previous))
+	for _, entry := range previous {
+		old[entry.Schema.Name] = entry
 	}
-	for _, entry := range entries {
+	for _, entry := range pending.tools {
 		name := entry.Schema.Name
-		names[name] = true
-		if !old[name] {
+		names[name] = struct{}{}
+		before, found := old[name]
+		if !found {
 			pending.added = append(pending.added, name)
 		}
+		if !found || !sameImplementation(entry, before) {
+			pending.preparations = append(pending.preparations, entry)
+		}
 	}
-	for _, name := range previous {
-		if !names[name] {
-			pending.removed = append(pending.removed, name)
+	for _, entry := range previous {
+		if _, found := names[entry.Schema.Name]; !found {
+			pending.removed = append(pending.removed, entry.Schema.Name)
 		}
 	}
 	return pending
@@ -90,12 +101,12 @@ func (owner *Update) Apply(ctx context.Context, instances Instances) (bool, erro
 				owner.transition(aborting)
 				continue
 			}
-			if owner.next == len(owner.tools) {
+			if owner.next == len(owner.preparations) {
 				owner.transition(committing)
 				continue
 			}
 			owner.attempted = owner.next + 1
-			err := instances.Prepare(ctx, owner.revision, owner.tools[owner.next])
+			err := instances.Prepare(ctx, owner.revision, owner.preparations[owner.next])
 			if err != nil {
 				owner.failure = err
 				owner.transition(aborting)
@@ -103,21 +114,21 @@ func (owner *Update) Apply(ctx context.Context, instances Instances) (bool, erro
 			}
 			owner.next++
 		case committing:
-			if owner.next == len(owner.tools) {
+			if owner.next == len(owner.preparations) {
 				owner.transition(retiring)
 				continue
 			}
-			err := instances.Commit(cleanup, owner.revision, owner.tools[owner.next].Schema.Name)
+			err := instances.Commit(cleanup, owner.revision, owner.preparations[owner.next].Schema.Name)
 			if err != nil {
 				return false, err
 			}
 			owner.next++
 		case retiring:
-			if owner.next == len(owner.tools) {
+			if owner.next == len(owner.preparations) {
 				owner.transition(removing)
 				continue
 			}
-			err := instances.Retire(cleanup, owner.revision, owner.tools[owner.next].Schema.Name)
+			err := instances.Retire(cleanup, owner.revision, owner.preparations[owner.next].Schema.Name)
 			if err != nil {
 				return false, err
 			}
@@ -127,7 +138,7 @@ func (owner *Update) Apply(ctx context.Context, instances Instances) (bool, erro
 				owner.transition(removing)
 				continue
 			}
-			err := instances.Abort(cleanup, owner.revision, owner.tools[owner.next].Schema.Name)
+			err := instances.Abort(cleanup, owner.revision, owner.preparations[owner.next].Schema.Name)
 			if err != nil {
 				return false, errors.Join(owner.failure, err)
 			}
@@ -155,4 +166,14 @@ func (owner *Update) Apply(ctx context.Context, instances Instances) (bool, erro
 func (owner *Update) transition(next updatePhase) {
 	owner.phase = next
 	owner.next = 0
+}
+
+// sameImplementation compares only inputs used to provision a Tool. Visibility
+// and execution policies belong to the effective collection, not Provider resources.
+func sameImplementation(left, right Tool) bool {
+	return left.ProviderID == right.ProviderID &&
+		left.Schema.Name == right.Schema.Name &&
+		left.Schema.Version == right.Schema.Version &&
+		left.Schema.Description == right.Schema.Description &&
+		bytes.Equal(left.Schema.Parameters, right.Schema.Parameters)
 }

@@ -42,7 +42,7 @@ func (endpoint *work) Remove(_ context.Context, name string) error {
 	return endpoint.perform("remove:" + name)
 }
 
-func initializedRuntime(t *testing.T) (*Runtime, *directory, *work) {
+func initializedRuntime(t *testing.T) (*Toolset, *directory, *work) {
 	t.Helper()
 	source := &directory{}
 	err := source.registry.RegisterSource("local", toolregistry.Catalog{
@@ -51,7 +51,7 @@ func initializedRuntime(t *testing.T) (*Runtime, *directory, *work) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner, err := NewRuntime("agent")
+	owner, err := NewToolset("agent")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func initializedRuntime(t *testing.T) (*Runtime, *directory, *work) {
 func TestRuntimeSwitchesCompleteWorkBeforeExposingDefinitions(t *testing.T) {
 	owner, source, endpoint := initializedRuntime(t)
 	err := source.registry.RegisterSource("local", toolregistry.Catalog{
-		Schemas: []llm.ToolSchema{testSchema("read"), testSchema("added")},
+		Schemas: []llm.ToolSchema{changedReadSchema(), testSchema("added")},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -99,7 +99,7 @@ func TestRuntimeSwitchesCompleteWorkBeforeExposingDefinitions(t *testing.T) {
 func TestRuntimeRollsBackEveryAttemptAndPreservesOriginalWork(t *testing.T) {
 	owner, source, endpoint := initializedRuntime(t)
 	err := source.registry.RegisterSource("local", toolregistry.Catalog{
-		Schemas: []llm.ToolSchema{testSchema("added"), testSchema("read")},
+		Schemas: []llm.ToolSchema{testSchema("added"), changedReadSchema()},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -187,7 +187,7 @@ func TestRuntimeRecoveryAppliesCurrentConfiguration(t *testing.T) {
 		t.Run(scenario.name, func(t *testing.T) {
 			owner, source, endpoint := initializedRuntime(t)
 			if err := source.registry.RegisterSource("local", toolregistry.Catalog{
-				Schemas: []llm.ToolSchema{testSchema("added"), testSchema("read")},
+				Schemas: []llm.ToolSchema{testSchema("added"), changedReadSchema()},
 			}); err != nil {
 				t.Fatal(err)
 			}
@@ -240,4 +240,46 @@ func TestRuntimeCloseRetainsFailedResourceAndRejectsReuse(t *testing.T) {
 	if !slices.Equal(endpoint.events, []string{"remove:read", "remove:removed", "remove:removed"}) {
 		t.Fatalf("cleanup=%v", endpoint.events)
 	}
+}
+
+func TestRuntimeAppliesNewTargetAfterRollback(t *testing.T) {
+	owner, source, endpoint := initializedRuntime(t)
+	if err := source.registry.RegisterSource("local", toolregistry.Catalog{
+		Schemas: []llm.ToolSchema{testSchema("added"), testSchema("read")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	endpoint.failure = "prepare:added"
+	if complete, err := owner.Apply(t.Context(), source.registry.Read("agent"), endpoint); !complete || err == nil {
+		t.Fatalf("rollback: complete=%v error=%v", complete, err)
+	}
+	if err := source.registry.RegisterSource("local", toolregistry.Catalog{
+		Schemas: []llm.ToolSchema{testSchema("next"), testSchema("read")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	endpoint.failure = ""
+	endpoint.events = nil
+	if complete, err := owner.Apply(t.Context(), source.registry.Read("agent"), endpoint); !complete || err != nil {
+		t.Fatalf("new target: complete=%v error=%v", complete, err)
+	}
+	expected := []string{
+		"prepare:next",
+		"commit:next",
+		"retire:next",
+		"remove:removed",
+	}
+	if !slices.Equal(endpoint.events, expected) {
+		t.Fatalf("previous rollback affected new application: %v", endpoint.events)
+	}
+	captured, err := owner.Definitions()
+	if err != nil || !slices.Equal(captured.KnownNames, []string{"next", "read"}) {
+		t.Fatalf("new target unavailable: %+v error=%v", captured, err)
+	}
+}
+
+func changedReadSchema() llm.ToolSchema {
+	definition := testSchema("read")
+	definition.Description = "Changed implementation"
+	return definition
 }

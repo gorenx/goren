@@ -132,7 +132,7 @@ func initializeRuntime(t *testing.T, system goakt.ActorSystem, registry *goakt.G
 	}
 }
 
-func TestRuntimeOwnsToolReplacementAndFailedCloseRecovery(t *testing.T) {
+func TestRuntimePreservesHiddenToolAndRetriesFailedClose(t *testing.T) {
 	provider := &source{}
 	system, target, registry, closing := startRuntime(t, provider)
 	route := ask[catalogactor.ToolAddress](t, system, registry, catalogactor.FindTool{
@@ -164,8 +164,8 @@ func TestRuntimeOwnsToolReplacementAndFailedCloseRecovery(t *testing.T) {
 	if updated.Err != nil || len(updated.Value.Schemas) != 0 || len(updated.Value.KnownNames) != 1 {
 		t.Fatalf("updated: %+v", updated)
 	}
-	if provider.opens.Load() != 2 || provider.closes.Load() != 1 {
-		t.Fatal("replacement did not release previous work")
+	if provider.opens.Load() != 1 || provider.closes.Load() != 0 {
+		t.Fatal("visibility change reopened implementation")
 	}
 	provider.closeFailure.Store(true)
 	closed := ask[runtimeactor.Completion](t, system, target, closing)
@@ -188,7 +188,7 @@ func TestRuntimeOwnsToolReplacementAndFailedCloseRecovery(t *testing.T) {
 		AgentID: "agent",
 		Name:    toolaskuser.Name,
 	})
-	if route.Found || provider.opens.Load() != 2 || provider.closes.Load() != 3 {
+	if route.Found || provider.opens.Load() != 1 || provider.closes.Load() != 2 {
 		t.Fatal("cleanup reopened work or retained its destination")
 	}
 }

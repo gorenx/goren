@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"reflect"
 	"slices"
 
 	"github.com/gorenx/goren/llm"
@@ -28,9 +27,9 @@ type Snapshot struct {
 	Policies map[string]execution.Policies
 }
 
-// Runtime owns only applied work and an unfinished replacement. Registry remains
+// Toolset owns only applied work and an unfinished replacement. Registry remains
 // authoritative for source and Session configuration, which is read at each boundary.
-type Runtime struct {
+type Toolset struct {
 	agentID session.SessionID
 	current []Tool
 	pending *Update
@@ -40,22 +39,21 @@ type Runtime struct {
 	// schema, including Version. It retains history across disabling/removal;
 	// membership and current visibility belong to current, not this map.
 	versions map[string]llm.ToolSchema
-	// configuration includes disabled tools; pendingConfiguration is installed
-	// only after the corresponding work replacement succeeds.
-	configuration        toolregistry.Configuration
-	pendingConfiguration *toolregistry.Configuration
+	// configuration is the last fully applied input, including disabled tools.
+	// The pending operation owns its target until resource work succeeds.
+	configuration toolregistry.Configuration
 }
 
-// NewRuntime reserves an unconfigured business owner without starting work.
-func NewRuntime(identifier session.SessionID) (*Runtime, error) {
+// NewToolset reserves an unconfigured business owner without starting work.
+func NewToolset(identifier session.SessionID) (*Toolset, error) {
 	if identifier == "" {
 		return nil, errors.New("tools: Agent identity is required")
 	}
-	return &Runtime{agentID: identifier}, nil
+	return &Toolset{agentID: identifier}, nil
 }
 
 // Initialize applies inherited Registry input before exposing a tool snapshot.
-func (owner *Runtime) Initialize(ctx context.Context, input toolregistry.Configuration, instances Instances) error {
+func (owner *Toolset) Initialize(ctx context.Context, input toolregistry.Configuration, instances Instances) error {
 	if owner.ready || owner.pending != nil || owner.closing {
 		return errors.New("tools: initialization was already attempted")
 	}
@@ -68,7 +66,7 @@ func (owner *Runtime) Initialize(ctx context.Context, input toolregistry.Configu
 
 // Apply finishes any pending replacement before applying the supplied configuration.
 // Callers must hold the Agent execution boundary until complete is true.
-func (owner *Runtime) Apply(ctx context.Context, input toolregistry.Configuration, instances Instances) (bool, error) {
+func (owner *Toolset) Apply(ctx context.Context, input toolregistry.Configuration, instances Instances) (bool, error) {
 	if ctx == nil || instances == nil {
 		return false, errors.New("tools: update context and instances are required")
 	}
@@ -85,33 +83,23 @@ func (owner *Runtime) Apply(ctx context.Context, input toolregistry.Configuratio
 	if err != nil {
 		return false, err
 	}
-	var previous []string
-	for _, entry := range owner.current {
-		previous = append(previous, entry.Schema.Name)
-	}
 	err = owner.assignVersions(entries)
 	if err != nil {
 		return false, err
 	}
-	if owner.ready && sameTools(entries, owner.current) {
-		owner.configuration = cloneConfiguration(input)
-		return true, nil
-	}
-	captured := cloneConfiguration(input)
-	owner.pendingConfiguration = &captured
-	owner.pending = NewUpdate(entries, previous)
+	owner.pending = NewUpdate(input, entries, owner.current)
 	return owner.applyUpdate(ctx, instances)
 }
 
 // applyUpdate retains the original revision and progress until all work settles.
-func (owner *Runtime) applyUpdate(ctx context.Context, instances Instances) (bool, error) {
+func (owner *Toolset) applyUpdate(ctx context.Context, instances Instances) (bool, error) {
 	complete, err := owner.pending.Apply(ctx, instances)
 	if !complete {
 		return false, err
 	}
 	if err == nil {
 		owner.current = cloneTools(owner.pending.tools)
-		owner.configuration = cloneConfiguration(*owner.pendingConfiguration)
+		owner.configuration = cloneConfiguration(owner.pending.configuration)
 		owner.ready = true
 		if owner.versions == nil {
 			owner.versions = make(map[string]llm.ToolSchema)
@@ -120,34 +108,30 @@ func (owner *Runtime) applyUpdate(ctx context.Context, instances Instances) (boo
 			owner.versions[entry.Schema.Name] = entry.Schema
 		}
 	}
-	owner.pendingConfiguration = nil
 	owner.pending = nil
 	return true, err
 }
 
 // Snapshot is unavailable while a replacement or close is unfinished.
-func (owner *Runtime) Snapshot() (Snapshot, error) {
-	if !owner.ready || owner.pending != nil || owner.closing {
-		return Snapshot{}, errors.New("tools: effective tool configuration is unavailable")
+func (owner *Toolset) Snapshot() (Snapshot, error) {
+	definitions, err := owner.Definitions()
+	if err != nil {
+		return Snapshot{}, err
 	}
 	captured := Snapshot{
+		Names:         definitions.KnownNames,
+		Schemas:       definitions.Schemas,
 		Configuration: cloneConfiguration(owner.configuration),
 		Policies:      make(map[string]execution.Policies),
 		ProviderIDs:   make(map[string]tools.ProviderID),
 	}
 	for _, entry := range owner.current {
-		captured.Names = append(captured.Names, entry.Schema.Name)
 		if entry.ProviderID != "" {
 			captured.ProviderIDs[entry.Schema.Name] = entry.ProviderID
 		}
 		policies := entry.Policies
 		policies.Guards = slices.Clone(policies.Guards)
 		captured.Policies[entry.Schema.Name] = policies
-		if entry.Visible {
-			schema := entry.Schema
-			schema.Parameters = slices.Clone(schema.Parameters)
-			captured.Schemas = append(captured.Schemas, schema)
-		}
 	}
 	return captured, nil
 }
@@ -160,16 +144,25 @@ func cloneConfiguration(input toolregistry.Configuration) toolregistry.Configura
 }
 
 // Definitions returns only the effective model-facing view, with hidden names retained.
-func (owner *Runtime) Definitions() (tools.Definitions, error) {
-	captured, err := owner.Snapshot()
-	return tools.Definitions{
-		AgentID:    owner.agentID,
-		Schemas:    captured.Schemas,
-		KnownNames: captured.Names,
-	}, err
+func (owner *Toolset) Definitions() (tools.Definitions, error) {
+	if !owner.ready || owner.pending != nil || owner.closing {
+		return tools.Definitions{}, errors.New("tools: effective tool configuration is unavailable")
+	}
+	captured := tools.Definitions{
+		AgentID: owner.agentID,
+	}
+	for _, entry := range owner.current {
+		captured.KnownNames = append(captured.KnownNames, entry.Schema.Name)
+		if entry.Visible {
+			schema := entry.Schema
+			schema.Parameters = slices.Clone(schema.Parameters)
+			captured.Schemas = append(captured.Schemas, schema)
+		}
+	}
+	return captured, nil
 }
 
-func (owner *Runtime) assignVersions(entries []Tool) error {
+func (owner *Toolset) assignVersions(entries []Tool) error {
 	for index := range entries {
 		entry := &entries[index].Schema
 		previous := owner.versions[entry.Name]
@@ -182,53 +175,4 @@ func (owner *Runtime) assignVersions(entries []Tool) error {
 		}
 	}
 	return nil
-}
-
-// sameTools compares borrowed policy identities without traversing their mutable
-// internals. Shared policy owners may be serving other Agents concurrently.
-func sameTools(left, right []Tool) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for index, entry := range left {
-		other := right[index]
-		if entry.Schema.Name != other.Schema.Name ||
-			entry.ProviderID != other.ProviderID ||
-			entry.Schema.Version != other.Schema.Version ||
-			entry.Schema.Description != other.Schema.Description ||
-			!bytes.Equal(entry.Schema.Parameters, other.Schema.Parameters) ||
-			entry.Visible != other.Visible ||
-			!samePolicies(entry.Policies, other.Policies) {
-			return false
-		}
-	}
-	return true
-}
-
-func samePolicies(left, right execution.Policies) bool {
-	if !sameCapability(left.Before, right.Before) ||
-		!sameCapability(left.After, right.After) ||
-		!sameCapability(left.Execution, right.Execution) ||
-		!sameCapability(left.Results, right.Results) ||
-		len(left.Guards) != len(right.Guards) {
-		return false
-	}
-	for index, guard := range left.Guards {
-		if !sameCapability(guard, right.Guards[index]) {
-			return false
-		}
-	}
-	return true
-}
-
-func sameCapability(left, right any) bool {
-	kind := reflect.TypeOf(left)
-	if kind != reflect.TypeOf(right) {
-		return false
-	}
-	if kind == nil {
-		return true
-	}
-	// Non-comparable value capabilities cannot prove stable identity; apply them.
-	return kind.Comparable() && left == right
 }

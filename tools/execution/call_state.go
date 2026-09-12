@@ -26,6 +26,7 @@ func cloneExecution(source callExecution) tools.ToolExecution { return source.To
 type scheduledExecutionState struct {
 	coordinator    *Scheduler
 	pipeline       *pipeline
+	policies       *policyEngine
 	requestContext context.Context
 	entry          *tools.Contract
 	finalizer      tools.ContentFinalizer
@@ -61,10 +62,16 @@ func newScheduledExecutionState(
 	requestContext context.Context,
 	entry *tools.Contract,
 	finalizer tools.ContentFinalizer,
+	policies Policies,
 ) *scheduledExecutionState {
 	return &scheduledExecutionState{
-		coordinator:    coordinator,
-		pipeline:       coordinator.pipeline,
+		coordinator: coordinator,
+		pipeline: &pipeline{
+			options: policies,
+		},
+		policies: &policyEngine{
+			guards: append([]tools.ToolGuard(nil), policies.Guards...),
+		},
 		requestContext: requestContext,
 		entry:          entry,
 		finalizer:      finalizer,

@@ -56,6 +56,11 @@ func (owner *connections) reconcile(ctx context.Context, definitions []mcpclient
 		name := configuration.ServerName
 		peer := owner.servers[name]
 		if peer != nil && previous[name].Equal(configuration) {
+			if connectionAlive(peer) {
+				if err := peer.Refresh(ctx); err != nil {
+					return errors.Join(err, owner.release(ctx, retained))
+				}
+			}
 			next[name] = peer
 			continue
 		}
@@ -143,19 +148,6 @@ func (owner *connections) changed() bool {
 		}
 	}
 	return changed
-}
-
-func (owner *connections) refresh(ctx context.Context) error {
-	owner.mu.RLock()
-	defer owner.mu.RUnlock()
-	for _, peer := range owner.servers {
-		if connectionAlive(peer) {
-			if err := peer.Refresh(ctx); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
 }
 
 // catalog adds this Runtime's discovered bindings to a detached configuration.

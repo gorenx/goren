@@ -7,7 +7,7 @@ import (
 
 // Close drains unfinished replacement work and then stops each retained tool.
 // Errors preserve the exact remaining resource responsibilities for another attempt.
-func (owner *Runtime) Close(ctx context.Context, instances Instances) error {
+func (owner *Toolset) Close(ctx context.Context, instances Instances) error {
 	if ctx == nil || instances == nil {
 		return errors.New("tools: close context and instances are required")
 	}
@@ -25,7 +25,6 @@ func (owner *Runtime) Close(ctx context.Context, instances Instances) error {
 		if err == nil {
 			owner.current = cloneTools(owner.pending.tools)
 		}
-		owner.pendingConfiguration = nil
 		owner.pending = nil
 	}
 	for len(owner.current) != 0 {

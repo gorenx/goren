@@ -13,12 +13,11 @@ import (
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
-// toolClient sends lifecycle and execution requests for one Agent. It owns no
+// toolClient sends lifecycle requests for one Agent. It owns no
 // tool records and is captured only by the task performing those requests.
 type toolClient struct {
 	system     goakt.ActorSystem
 	runtime    *goakt.GrainIdentity
-	directory  *goakt.GrainIdentity
 	agentID    session.SessionID
 	creationID string
 	timeout    time.Duration
