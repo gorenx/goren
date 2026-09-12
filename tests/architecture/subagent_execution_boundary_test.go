@@ -15,7 +15,6 @@ func TestSubagentModesOwnIndependentExecutionState(t *testing.T) {
 	fileSet := token.NewFileSet()
 	sourcesByPackage := parsePackages(t, fileSet, repositoryPath)
 	modeTypes := map[string]string{
-		"bound":       "boundExecution",
 		"continuable": "residentExecution",
 		"oneshot":     "oneShotExecution",
 	}
@@ -116,7 +115,6 @@ func TestSubagentExecutionsDoNotRetainChildOwners(t *testing.T) {
 	fileSet := token.NewFileSet()
 	sourcesByPackage := parsePackages(t, fileSet, repositoryPath)
 	forbidden := map[string]string{
-		filepath.Join(repositoryPath, "subagent", "internal", "bound") + ":bound":             "boundChild",
 		filepath.Join(repositoryPath, "subagent", "internal", "continuable") + ":continuable": "continuableChild",
 	}
 	findings := make([]string, 0)

@@ -82,12 +82,6 @@ func (identityUnit) ApplyState(
 				Label: stringPointer(descriptor.Label),
 				Seq:   committed.Seq,
 			}
-		case subagent.BoundDescriptor:
-			next.Identity = &Identity{
-				Mode:  subagent.ModeBound,
-				Label: stringPointer(descriptor.Name),
-				Seq:   committed.Seq,
-			}
 		}
 	}
 	nextState, err := json.Marshal(next)
@@ -176,7 +170,7 @@ func decodeIdentityValue(rawValue json.RawMessage) (Identity, error) {
 			decoded.Label = &label
 		}
 		return decoded, nil
-	case subagent.ModeContinuable, subagent.ModeBound:
+	case subagent.ModeContinuable:
 		if len(wire.Label) == 0 ||
 			bytes.Equal(bytes.TrimSpace(wire.Label), []byte("null")) {
 			return Identity{}, errInvalidIdentity

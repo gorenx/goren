@@ -27,15 +27,15 @@ var privilegedMethods = map[string]struct{}{
 	"settings.resetProvider":    {},
 	"settings.resetPrompt":      {},
 	"settings.resetMCP":         {},
+	"companion.list":            {},
+	"companion.create":          {},
+	"companion.configure":       {},
+	"companion.remove":          {},
+	"companion.restart":         {},
 	"credentials.describe":      {},
 	"credentials.set":           {},
 	"credentials.unset":         {},
 	"llm.discoverModels":        {},
-	"bound.list":                {},
-	"bound.tools":               {},
-	"bound.extensions":          {},
-	"bound.create":              {},
-	"bound.replace":             {},
 }
 
 func isPrivilegedMethod(method string) bool {

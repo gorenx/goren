@@ -144,7 +144,7 @@ func (owner *Creator) selectTools(
 	sort.Strings(names)
 	for _, name := range names {
 		if name == report.Schema().Name {
-			return toolregistry.Catalog{}, errors.New("companion: report tool name is reserved")
+			return toolregistry.Catalog{}, fmt.Errorf("%w: report tool name is reserved", companions.ErrInvalid)
 		}
 		source := parentTools.Value.Global
 		index := slices.IndexFunc(source.Schemas, func(entry llm.ToolSchema) bool {
@@ -157,7 +157,7 @@ func (owner *Creator) selectTools(
 			})
 		}
 		if index < 0 && len(selected.MCP) == 0 {
-			return toolregistry.Catalog{}, fmt.Errorf("companion: tool %q is not installed", name)
+			return toolregistry.Catalog{}, fmt.Errorf("%w: tool %q is not installed", companions.ErrInvalid, name)
 		}
 		policy := source.Policies[name]
 		if index >= 0 {

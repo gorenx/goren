@@ -123,7 +123,7 @@ func (owner *Creator) Resolve(
 			}
 			for _, connection := range append(catalog.Value.Global.MCP, catalog.Value.Custom.MCP...) {
 				if _, exists := resolved.MCP[connection.ServerName]; exists {
-					return settings.Values{}, fmt.Errorf("companion: duplicate MCP connection %q", connection.ServerName)
+					return settings.Values{}, fmt.Errorf("%w: duplicate MCP connection %q", companions.ErrInvalid, connection.ServerName)
 				}
 				resolved.MCP[connection.ServerName] = settings.MCPConfig{
 					Enabled:    true,
@@ -181,7 +181,7 @@ func (owner *Creator) inheritTools(
 		}
 		static[schema.Name] = struct{}{}
 		if _, duplicate := resolved.Tools[schema.Name]; duplicate || schema.Name == report.Schema().Name {
-			return fmt.Errorf("companion: duplicate inherited tool %q", schema.Name)
+			return fmt.Errorf("%w: duplicate inherited tool %q", companions.ErrInvalid, schema.Name)
 		}
 		enabled, visible := true, true
 		for _, policy := range []toolregistry.Policy{source.Global.Policies[schema.Name], source.Custom.Policies[schema.Name]} {
@@ -202,10 +202,10 @@ func (owner *Creator) inheritTools(
 			continue
 		}
 		if !strings.HasPrefix(name, "mcp_") || !inheritMCP {
-			return fmt.Errorf("companion: tool %q requires an explicit connection", name)
+			return fmt.Errorf("%w: tool %q requires an explicit connection", companions.ErrInvalid, name)
 		}
 		if _, duplicate := resolved.Tools[name]; duplicate {
-			return fmt.Errorf("companion: duplicate inherited tool %q", name)
+			return fmt.Errorf("%w: duplicate inherited tool %q", companions.ErrInvalid, name)
 		}
 		visible := slices.ContainsFunc(current.Snapshot.Schemas, func(entry llm.ToolSchema) bool { return entry.Name == name })
 		enabled := true

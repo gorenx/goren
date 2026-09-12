@@ -91,10 +91,13 @@ func TestDirectoryBindsAdmittedCreationAndRejectsInvalidRoutes(t *testing.T) {
 		Commands: target,
 	}
 	parent := session.SessionID("parent")
-	for _, name := range []string{"valid", "missing", "identity", "membership", "creation", "child", "failed"} {
+	for _, name := range []string{"valid", "companion", "missing", "identity", "membership", "creation", "child", "failed"} {
 		t.Run(name, func(t *testing.T) {
 			ready := valid
 			switch name {
+			case "companion":
+				ready.Registration.ParentID = &parent
+				ready.Registration.Role = agent.CompanionRole
 			case "missing":
 				ready.Commands = nil
 			case "identity":
@@ -112,7 +115,7 @@ func TestDirectoryBindsAdmittedCreationAndRejectsInvalidRoutes(t *testing.T) {
 				t.Fatal(err)
 			}
 			endpoint, refused := directory.ResolveCommands(ctx, "conversation")
-			if name != "valid" {
+			if name != "valid" && name != "companion" {
 				if endpoint != nil || refused == nil {
 					t.Fatalf("invalid route accepted: %v, %v", endpoint, refused)
 				}

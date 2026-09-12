@@ -87,8 +87,18 @@ func TestSettingsHTTPPublishesAndRestoresMCPWithoutOpeningConnections(t *testing
 	if err := json.Unmarshal(callHTTP(t, ctx, process, "settings.describe", json.RawMessage(`{}`)), &initial); err != nil {
 		t.Fatal(err)
 	}
-	if !initial.Writable || len(initial.Namespaces) != 4 {
-		t.Fatalf("Settings was not mounted: %+v", initial)
+	installed := make(map[string]bool)
+	for _, entry := range initial.Namespaces {
+		installed[entry.NS+"/"+entry.Name] = true
+	}
+	if !initial.Writable ||
+		!installed["llmprovider/deepseek"] ||
+		!installed["prompt/default"] ||
+		!installed["mcp/fixture"] ||
+		!installed["tool/ask_user_question"] ||
+		!installed["tool/list_agents"] ||
+		!installed["tool/send_message"] {
+		t.Fatalf("Settings was not mounted with default capabilities: %+v", installed)
 	}
 	providerView := settingsHTTP(t, ctx, process, "settings.updateProvider", map[string]any{
 		"name":             "deepseek",

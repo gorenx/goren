@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/gorenx/goren/agent"
 	sessionframes "github.com/gorenx/goren/apiproxy/session/events"
 
 	rpc "github.com/gorenx/goren/apiproxy/rpc"
@@ -102,7 +103,7 @@ func (access *sessionAccess) attachedAgent(ctx context.Context, identifier sessi
 		problem := rpc.NewRPCError(connection.ErrorInternal, "Agent resolution returned another identity", struct{}{})
 		return nil, &problem
 	}
-	if subject.ParentID() != nil {
+	if subject.ParentID() != nil && subject.Role() != agent.CompanionRole {
 		problem := subagentOwnershipError(identifier)
 		return nil, &problem
 	}

@@ -20,9 +20,6 @@ const (
 	ModeOneShot Mode = "one-shot"
 	// ModeContinuable is one durable child conversation with resumable turns.
 	ModeContinuable Mode = "continuable"
-	// ModeBound is one child whose initial start is driven by a durable parent
-	// binding and whose runtime configuration comes from the Bound owner.
-	ModeBound Mode = "bound"
 )
 
 // OneShotOptions contains every caller-owned input for one terminal child.

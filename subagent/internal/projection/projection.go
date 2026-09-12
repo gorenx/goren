@@ -15,7 +15,6 @@ func Units() []sessionprojection.Unit {
 	return []sessionprojection.Unit{
 		timingUnit{},
 		identityUnit{},
-		boundUnit{},
 	}
 }
 

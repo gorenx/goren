@@ -81,16 +81,3 @@ const agentSchema = `{
   "mcp":{"type":"object","additionalProperties":` + mcpSchema + `}
  }
 }`
-
-const companionSchema = `{
- "$schema":"https://json-schema.org/draft/2020-12/schema",
- "type":"object","additionalProperties":false,
- "properties":{
-  "enabled":{"type":"boolean"},
-  "configuration":{"type":"string","minLength":1},
-  "inherit":{"type":"object","additionalProperties":false,"properties":{
-   "model":{"type":"boolean"},"prompt":{"type":"boolean"},
-   "tools":{"enum":["none","all"]},"mcp":{"type":"boolean"}
-  }}
- }
-}`

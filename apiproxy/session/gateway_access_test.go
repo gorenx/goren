@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/connection"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/session/persistence"
@@ -44,6 +45,14 @@ func TestGatewayAdmissionRecoversHistoryAndRejectsLiveChild(t *testing.T) {
 	}
 	if refused := owner.ActivateAgent(context.Background(), header.ID); refused == nil || refused.Code != connection.ErrorAgentBusy {
 		t.Fatalf("live child admitted: %#v", refused)
+	}
+	directory.current = activationAgent{
+		header: header,
+		parent: &parent,
+		role:   agent.CompanionRole,
+	}
+	if refused := owner.ActivateAgent(context.Background(), header.ID); refused != nil {
+		t.Fatalf("live Companion refused: %#v", refused)
 	}
 	directory.current = nil
 	owner.lifecycle.access.runtimeSessions.history = activationHistory{

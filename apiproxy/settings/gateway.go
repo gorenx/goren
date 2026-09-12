@@ -6,6 +6,7 @@ import (
 	"errors"
 	"sort"
 
+	companionapi "github.com/gorenx/goren/apiproxy/companion"
 	"github.com/gorenx/goren/apiproxy/rpc"
 	"github.com/gorenx/goren/connection"
 	"github.com/gorenx/goren/settings"
@@ -136,7 +137,7 @@ func groupSchema(kind settings.Section) (string, string, ApplyMode) {
 	case settings.AgentSection:
 		return "agent", agentSchema, ApplyExplicit
 	case settings.CompanionSection:
-		return "companion", companionSchema, ApplyNewInstance
+		return "companion", companionapi.ConfigSchema, ApplyNewInstance
 	case settings.ToolSection:
 		return "tool", toolSchema, ApplyLive
 	case settings.ProviderSection:

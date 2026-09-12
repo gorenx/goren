@@ -9,6 +9,7 @@ import (
 	agentregistry "github.com/gorenx/goren/agent/registry"
 	"github.com/gorenx/goren/apiproxy"
 	commandsadapter "github.com/gorenx/goren/apiproxy/commands/actor"
+	companionadapter "github.com/gorenx/goren/apiproxy/companion/actor"
 	modeladapter "github.com/gorenx/goren/apiproxy/llm/actor"
 	mcpadapter "github.com/gorenx/goren/apiproxy/mcp/actor"
 	sessionapi "github.com/gorenx/goren/apiproxy/session"
@@ -27,6 +28,7 @@ import (
 	sessionregistry "github.com/gorenx/goren/session/registry"
 	"github.com/gorenx/goren/session/title"
 	settingsactor "github.com/gorenx/goren/settings/actor"
+	companionactor "github.com/gorenx/goren/subagent/companion/actor"
 	promptactor "github.com/gorenx/goren/systemprompt/actor"
 	toolactor "github.com/gorenx/goren/tools/tool/actor"
 	workspaceactor "github.com/gorenx/goren/workspace/actor"
@@ -103,6 +105,26 @@ func (owner *Server) initializeAPI(ctx context.Context, constructors *toolactor.
 	}
 	owner.agents, err = goakt.GrainOf[*agentregistry.Grain](ctx, system, agentregistry.Name,
 		goakt.WithLongLivedGrain(), goakt.WithGrainReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))))
+	if err != nil {
+		return err
+	}
+	preferences, err := settingsactor.NewClient(ctx, system)
+	if err != nil {
+		return err
+	}
+	creator := &companionactor.Creator{
+		System:   system,
+		Registry: owner.agents,
+		Tools:    tools,
+		Model:    models,
+		Settings: preferences,
+		Storage:  owner.sessions,
+	}
+	installer, err := companionactor.Register(ctx, system, companionactor.Dependencies{
+		Registry: owner.agents,
+		Settings: preferences,
+		Creator:  creator,
+	})
 	if err != nil {
 		return err
 	}
@@ -213,7 +235,7 @@ func (owner *Server) initializeAPI(ctx context.Context, constructors *toolactor.
 			PromptRegistry:  prompts,
 			ToolsRegistry:   tools,
 			Commands:        commands,
-			Components:      []*goakt.GrainIdentity{titleOwner},
+			Components:      []*goakt.GrainIdentity{titleOwner, installer},
 		},
 		timeout,
 	)
@@ -248,7 +270,7 @@ func (owner *Server) initializeAPI(ctx context.Context, constructors *toolactor.
 	if err != nil {
 		return err
 	}
-	preferences, err := settingsactor.NewClient(ctx, system)
+	companionManager, err := companionadapter.NewManager(system, owner.agents, preferences, creator)
 	if err != nil {
 		return err
 	}
@@ -271,6 +293,7 @@ func (owner *Server) initializeAPI(ctx context.Context, constructors *toolactor.
 	owner.api, err = apiproxy.NewServer(ctx, apiproxy.Dependencies{
 		DirectoryPicker: owner.picker,
 		MCP:             mcpDirectory,
+		Companions:      companionManager,
 		Settings:        preferences,
 		Sessions: sessionapi.Dependencies{
 			Storage:     owner.settings.Attachments,

@@ -21,13 +21,11 @@ type childExecutionControl struct {
 	executions  *sharedexecution.Registry
 	modes       map[subagent.Mode]implementation
 	continuable continuable
-	bound       bound
 }
 
 func newChildExecutionControl(agents agentDirectory, executions *sharedexecution.Registry, implementations map[subagent.Mode]implementation) *childExecutionControl {
 	control := &childExecutionControl{agents: agents, executions: executions, modes: implementations}
 	control.continuable, _ = implementations[subagent.ModeContinuable].(continuable)
-	control.bound, _ = implementations[subagent.ModeBound].(bound)
 	return control
 }
 
@@ -47,12 +45,6 @@ func (control *childExecutionControl) Send(ctx context.Context, parentID, childI
 		if err = control.authorizeParent(ctx, entry, parentID); err != nil {
 			return "", err
 		}
-		if entry.Mode == subagent.ModeBound {
-			if control.bound == nil {
-				return "", errors.New("subagent: Bound implementation is incomplete")
-			}
-			return control.bound.Followup(ctx, parentID, childID, message)
-		}
 		child, findErr := control.agents.Find(ctx, childID)
 		if findErr != nil {
 			return "", findErr
@@ -61,15 +53,6 @@ func (control *childExecutionControl) Send(ctx context.Context, parentID, childI
 			return "", err
 		}
 		return message.StableID(), nil
-	}
-	if control.bound != nil {
-		boundChild, checkErr := control.bound.HasBinding(ctx, parentID, childID)
-		if checkErr != nil {
-			return "", checkErr
-		}
-		if boundChild {
-			return control.bound.Followup(ctx, parentID, childID, message)
-		}
 	}
 	if control.continuable == nil {
 		return "", errors.New("subagent: Continuable implementation does not support resume")

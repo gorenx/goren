@@ -29,6 +29,7 @@ type promptAgent struct {
 
 func (*promptAgent) ID() session.SessionID        { return "conversation" }
 func (*promptAgent) ParentID() *session.SessionID { return nil }
+func (*promptAgent) Role() agent.Role             { return agent.OrdinaryRole }
 func (subject *promptAgent) Followup(ctx context.Context, input agentmessage.UserMessage) error {
 	if ctx.Err() != nil {
 		return ctx.Err()

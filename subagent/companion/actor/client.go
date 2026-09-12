@@ -6,8 +6,10 @@ import (
 	"errors"
 	"time"
 
+	"github.com/gorenx/goren/agent"
 	agentregistry "github.com/gorenx/goren/agent/registry"
 	"github.com/gorenx/goren/agentmessage"
+	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/settings"
 	companions "github.com/gorenx/goren/subagent/companion"
 	goakt "github.com/tochemey/goakt/v4/actor"
@@ -123,6 +125,45 @@ type Client struct {
 	// parent fixes the lifetime credential; a replacement Creation cannot reuse it.
 	parent agentregistry.Creation
 }
+
+// OpenClient resolves the currently installed Steward through the parent's
+// ordinary component routes. It never creates a route for a missing parent.
+func OpenClient(
+	ctx context.Context,
+	system goakt.ActorSystem,
+	registry *goakt.GrainIdentity,
+	parentID session.SessionID,
+) (*Client, error) {
+	if ctx == nil || system == nil || registry == nil || parentID == "" {
+		return nil, companions.ErrInvalid
+	}
+	ready, err := ask[agentregistry.Ready](ctx, system, registry, agentregistry.FindAgent{
+		AgentID:   parentID,
+		WaitReady: true,
+	})
+	if err != nil || ready.Err != nil {
+		return nil, errors.Join(err, ready.Err)
+	}
+	if ready.Creation.AgentID != parentID || ready.Creation.CreationID == "" {
+		return nil, agentregistry.ErrCreation
+	}
+	if ready.Registration.Role == agent.CompanionRole {
+		return nil, agent.ErrRole
+	}
+	for _, component := range ready.Components {
+		if component.Owner != nil && component.Owner.Name() == InstallerName && component.Runtime != nil {
+			return &Client{
+				system: system,
+				target: component.Runtime,
+				parent: ready.Creation,
+			}, nil
+		}
+	}
+	return nil, agentregistry.ErrCreation
+}
+
+// Creation returns the exact parent lifetime retained by this client.
+func (sender *Client) Creation() agentregistry.Creation { return sender.parent }
 
 type command struct {
 	// parent carries the exact lifetime checked before business dispatch.

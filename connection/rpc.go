@@ -72,10 +72,11 @@ const (
 	ErrorSubagentNotResumable        RPCErrorCode = "subagent-not-resumable"
 	ErrorSubagentUnauthorized        RPCErrorCode = "subagent-unauthorized"
 	ErrorSubagentDeliveryUnavailable RPCErrorCode = "subagent-delivery-unavailable"
-	ErrorBoundDefinitionExists       RPCErrorCode = "bound-definition-exists"
-	ErrorBoundDefinitionNotFound     RPCErrorCode = "bound-definition-not-found"
-	ErrorBoundDefinitionConflict     RPCErrorCode = "bound-definition-conflict"
-	ErrorBoundDefinitionRejected     RPCErrorCode = "bound-definition-rejected"
+	ErrorCompanionInvalid            RPCErrorCode = "companion-invalid"
+	ErrorCompanionForbidden          RPCErrorCode = "companion-forbidden"
+	ErrorCompanionNotFound           RPCErrorCode = "companion-not-found"
+	ErrorCompanionConflict           RPCErrorCode = "companion-conflict"
+	ErrorCompanionUnavailable        RPCErrorCode = "companion-unavailable"
 	ErrorInternal                    RPCErrorCode = "internal"
 )
 

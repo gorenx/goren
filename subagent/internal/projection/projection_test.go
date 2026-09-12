@@ -20,9 +20,6 @@ func TestIdentityProjectionUsesLatestTrustworthyDescriptor(t *testing.T) {
 		Provider: "fork",
 		Label:    "review",
 	})
-	boundData := descriptorData(t, subagent.BoundDescriptor{
-		Name: "resident",
-	})
 	unit := identityUnit{}
 	state, err := unit.InitialState()
 	if err != nil {
@@ -31,7 +28,6 @@ func TestIdentityProjectionUsesLatestTrustworthyDescriptor(t *testing.T) {
 	for _, committed := range []session.Event{
 		projectionEvent(subagent.DescriptorEventName, 2, 100, oneShotData),
 		projectionEvent(subagent.DescriptorEventName, 8, 200, continuableData),
-		projectionEvent(subagent.DescriptorEventName, 9, 250, boundData),
 	} {
 		transition, applyErr := unit.ApplyState(state, committed)
 		if applyErr != nil {
@@ -49,8 +45,8 @@ func TestIdentityProjectionUsesLatestTrustworthyDescriptor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !found || decodedIdentity.Mode != subagent.ModeBound ||
-		decodedIdentity.Label == nil || *decodedIdentity.Label != "resident" || decodedIdentity.Seq != 9 {
+	if !found || decodedIdentity.Mode != subagent.ModeContinuable ||
+		decodedIdentity.Label == nil || *decodedIdentity.Label != "review" || decodedIdentity.Seq != 8 {
 		t.Fatalf("identity = %#v, found = %v", decodedIdentity, found)
 	}
 

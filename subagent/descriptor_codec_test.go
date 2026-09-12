@@ -47,19 +47,6 @@ func TestSnapshotDescriptorNormalizesAndDetachesVariants(t *testing.T) {
 		t.Fatalf("continuable descriptor = %s", continuableRaw)
 	}
 
-	boundData, err := SnapshotDescriptor(BoundDescriptor{
-		Name: "resident",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	boundRaw, err := json.Marshal(boundData)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(boundRaw) != `{"version":2,"mode":"bound","name":"resident"}` {
-		t.Fatalf("Bound descriptor = %s", boundRaw)
-	}
 }
 
 func TestFoldDescriptorUsesFirstAuthoritativeEvent(t *testing.T) {

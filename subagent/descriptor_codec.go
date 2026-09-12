@@ -66,19 +66,6 @@ func (data DescriptorData) MarshalJSON() ([]byte, error) {
 			Persona:       cloneString(identity.Persona),
 			ToolFilter:    wireFilter,
 		})
-	case BoundDescriptor:
-		if identity.Version != DescriptorVersion || identity.Mode != ModeBound {
-			return nil, errors.New("subagent: invalid Bound descriptor identity")
-		}
-		return json.Marshal(struct {
-			Version int    `json:"version"`
-			Mode    Mode   `json:"mode"`
-			Name    string `json:"name"`
-		}{
-			Version: DescriptorVersion,
-			Mode:    ModeBound,
-			Name:    identity.Name,
-		})
 	case nil:
 		return nil, errors.New("subagent: descriptor value is missing")
 	default:
@@ -129,16 +116,9 @@ func (data *DescriptorData) UnmarshalJSON(rawValue []byte) error {
 		}
 		data.value = identity
 		return nil
-	case ModeBound:
-		identity, decodeErr := decodeBoundDescriptor(fields)
-		if decodeErr != nil {
-			return decodeErr
-		}
-		data.value = identity
-		return nil
 	default:
 		return errors.New(
-			"subagent: persisted descriptor mode must be \"one-shot\", \"continuable\", or \"bound\"",
+			"subagent: persisted descriptor mode must be \"one-shot\" or \"continuable\"",
 		)
 	}
 }
@@ -169,12 +149,6 @@ func SnapshotDescriptor(source Descriptor) (DescriptorData, error) {
 			AgentModel:    cloneString(identity.AgentModel),
 			Persona:       cloneString(identity.Persona),
 			ToolFilter:    filterValue,
-		}
-	case BoundDescriptor:
-		normalized = BoundDescriptor{
-			Version: DescriptorVersion,
-			Mode:    ModeBound,
-			Name:    identity.Name,
 		}
 	case nil:
 		return DescriptorData{}, errors.New("subagent: descriptor is required")
@@ -322,29 +296,6 @@ func decodeContinuableDescriptor(
 		AgentModel:    agentModel,
 		Persona:       personaValue,
 		ToolFilter:    filterValue,
-	}, nil
-}
-
-func decodeBoundDescriptor(
-	fields map[string]json.RawMessage,
-) (BoundDescriptor, error) {
-	// Key is an accepted Bound descriptor field name. The empty value records
-	// membership only for strict unknown-field rejection.
-	if err := rejectUnknownFields(fields, map[string]struct{}{
-		"version": {},
-		"mode":    {},
-		"name":    {},
-	}); err != nil {
-		return BoundDescriptor{}, err
-	}
-	definitionName, err := requiredString(fields, "name")
-	if err != nil {
-		return BoundDescriptor{}, err
-	}
-	return BoundDescriptor{
-		Version: DescriptorVersion,
-		Mode:    ModeBound,
-		Name:    definitionName,
 	}, nil
 }
 
@@ -515,8 +466,6 @@ func cloneDescriptor(source Descriptor) Descriptor {
 		identity.Persona = cloneString(identity.Persona)
 		filterValue, _ := cloneToolRestriction(identity.ToolFilter)
 		identity.ToolFilter = filterValue
-		return identity
-	case BoundDescriptor:
 		return identity
 	default:
 		return nil

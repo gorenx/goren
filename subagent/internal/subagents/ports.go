@@ -6,7 +6,6 @@ import (
 	"github.com/gorenx/goren/agentmessage"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/subagent"
-	boundcontract "github.com/gorenx/goren/subagent/bound"
 )
 
 // implementation is the common lifecycle contract for one Subagent mode.
@@ -39,37 +38,6 @@ type continuable interface {
 		session.SessionID,
 		agentmessage.UserMessage,
 	) (agentmessage.MessageID, error)
-}
-
-// bound is the complete Bound contract consumed by Service.
-type bound interface {
-	implementation
-	List(context.Context) ([]boundcontract.Definition, error)
-	Create(
-		context.Context,
-		boundcontract.Creation,
-	) (boundcontract.Definition, error)
-	Replace(
-		context.Context,
-		boundcontract.Replacement,
-	) (boundcontract.Definition, error)
-	SessionStarted(session.SessionID)
-	HasBinding(
-		context.Context,
-		session.SessionID,
-		session.SessionID,
-	) (bool, error)
-	Followup(
-		context.Context,
-		session.SessionID,
-		session.SessionID,
-		agentmessage.UserMessage,
-	) (agentmessage.MessageID, error)
-	Deliver(
-		context.Context,
-		boundcontract.Address,
-		boundcontract.Input,
-	) (boundcontract.Receipt, error)
 }
 
 type admissionState uint8

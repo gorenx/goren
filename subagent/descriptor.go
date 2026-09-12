@@ -38,13 +38,3 @@ type ContinuableDescriptor struct {
 }
 
 func (ContinuableDescriptor) descriptorVariant() {}
-
-// BoundDescriptor identifies a child initialized from one durable Definition
-// Binding. The complete applied Definition remains in a separate child event.
-type BoundDescriptor struct {
-	Version int    `json:"version"`
-	Mode    Mode   `json:"mode"`
-	Name    string `json:"name"`
-}
-
-func (BoundDescriptor) descriptorVariant() {}

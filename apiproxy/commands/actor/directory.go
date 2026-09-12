@@ -4,9 +4,9 @@ package commandsadapter
 import (
 	"context"
 	"errors"
-	"fmt"
 	"time"
 
+	"github.com/gorenx/goren/agent"
 	agentregistry "github.com/gorenx/goren/agent/registry"
 	commandsapi "github.com/gorenx/goren/apiproxy/commands"
 	"github.com/gorenx/goren/apiproxy/rpc"
@@ -64,8 +64,8 @@ func (source *Directory) ResolveCommands(ctx context.Context, identifier session
 		ready.Commands == nil {
 		return nil, failure(errors.New("commands API: command owner identity is missing or mismatched"))
 	}
-	if ready.Registration.ParentID != nil {
-		problem := rpc.NewRPCError(connection.ErrorAgentBusy, fmt.Sprintf("session %q is owned by subagent routing", identifier), struct {
+	if ready.Registration.ParentID != nil && ready.Registration.Role != agent.CompanionRole {
+		problem := rpc.NewRPCError(connection.ErrorAgentBusy, "delegated Agent uses subagent delivery", struct {
 			Reason string `json:"reason"`
 		}{
 			Reason: "use subagent delivery for this child session",

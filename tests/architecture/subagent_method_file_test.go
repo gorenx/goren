@@ -17,7 +17,6 @@ func TestSubagentMethodFilesIdentifyOneReceiver(t *testing.T) {
 	t.Parallel()
 	repositoryDirectory := repositoryRoot(t)
 	targetDirectories := []string{
-		filepath.Join(repositoryDirectory, "subagent", "internal", "bound"),
 		filepath.Join(repositoryDirectory, "subagent", "internal", "continuable"),
 	}
 	findings := []string{}

@@ -29,12 +29,6 @@ const (
 	// ErrorUnknownExtension rejects a selected Extension name that has no live
 	// registration in the Subagent Extension Registry.
 	ErrorUnknownExtension ErrorCode = "UNKNOWN_SUBAGENT_EXTENSION"
-	// ErrorBoundBindingNotFound reports that the exact parent Session has no
-	// binding for the requested Bound child.
-	ErrorBoundBindingNotFound ErrorCode = "BOUND_BINDING_NOT_FOUND"
-	// ErrorBoundDisabled rejects explicit delivery while the global Definition
-	// governing the requested Binding is disabled.
-	ErrorBoundDisabled ErrorCode = "BOUND_DISABLED"
 	// ErrorCancelled reports caller cancellation around listing reads.
 	ErrorCancelled ErrorCode = "CANCELLED"
 	// ErrorControlProjectionsUnavailable reports a missing projection registry.

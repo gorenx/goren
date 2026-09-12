@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 
 	commandapi "github.com/gorenx/goren/apiproxy/commands"
+	companionapi "github.com/gorenx/goren/apiproxy/companion"
 	credentialsapi "github.com/gorenx/goren/apiproxy/credentials"
 	"github.com/gorenx/goren/apiproxy/directorypicker"
 	"github.com/gorenx/goren/apiproxy/interaction"
@@ -34,6 +35,7 @@ type Dependencies struct {
 	Presets         presetapi.Roster
 	Settings        usersettings.Settings
 	MCP             mcpapi.Directory
+	Companions      companionapi.Manager
 }
 
 // Options contains API behavior and transport buffering settings.
@@ -132,6 +134,11 @@ func NewServer(ctx context.Context, ports Dependencies, settings Options) (*Serv
 	}
 	if err := settingsapi.Register(methods, settingsapi.NewGateway(ports.Settings)); err != nil {
 		return nil, err
+	}
+	if ports.Companions != nil {
+		if err := companionapi.Register(methods, ports.Companions); err != nil {
+			return nil, err
+		}
 	}
 	interactions, err := interaction.NewGateway(interaction.Dependencies{
 		Methods: methods,

@@ -82,16 +82,6 @@ func (adapter *directoryLister) project(
 			Parent: parentID,
 			Depth:  depth,
 		}, true, err
-	case subagent.BoundChildEntry:
-		status, err := adapter.status(requestContext, row.ID)
-		return Entry{
-			Kind:   "child",
-			ID:     string(row.ID),
-			Label:  row.Label,
-			Status: status,
-			Parent: parentID,
-			Depth:  depth,
-		}, true, err
 	case subagent.DiagnosticEntry:
 		return Entry{
 			Kind:   "diagnostic",

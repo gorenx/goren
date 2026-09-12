@@ -3,19 +3,18 @@ package rpc
 import (
 	"bytes"
 	"encoding/json"
+
 	"github.com/gorenx/goren/connection"
+	"github.com/gorenx/goren/internal/jsonvalue"
 )
 
 // ObjectFields reads an object payload without imposing domain field rules.
 func ObjectFields(rawPayload json.RawMessage) (map[string]json.RawMessage, []connection.ValidationIssue) {
-	trimmed := bytes.TrimSpace(rawPayload)
-	if len(trimmed) < 2 ||
-		trimmed[0] != '{' ||
-		trimmed[len(trimmed)-1] != '}' {
+	if !jsonvalue.IsObject(rawPayload) {
 		return nil, []connection.ValidationIssue{InvalidType(nil, "object")}
 	}
 	fields := make(map[string]json.RawMessage)
-	if err := json.Unmarshal(trimmed, &fields); err != nil {
+	if err := json.Unmarshal(rawPayload, &fields); err != nil {
 		return nil, []connection.ValidationIssue{InvalidType(nil, "object")}
 	}
 	return fields, nil

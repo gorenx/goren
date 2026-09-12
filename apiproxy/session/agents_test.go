@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/session"
 	"github.com/gorenx/goren/session/persistence"
 )
@@ -13,10 +14,12 @@ type activationAgent struct {
 	Agent
 	header session.Header
 	parent *session.SessionID
+	role   agent.Role
 }
 
 func (subject activationAgent) ID() session.SessionID        { return subject.header.ID }
 func (subject activationAgent) ParentID() *session.SessionID { return subject.parent }
+func (subject activationAgent) Role() agent.Role             { return subject.role }
 
 type activationDirectory struct {
 	current  Agent
@@ -39,12 +42,14 @@ func (directory *activationDirectory) Create(_ context.Context, input Opening) (
 type activationHistory struct {
 	History
 	header  session.Header
+	events  []session.Event
 	failure error
 }
 
 func (source activationHistory) Inspect(context.Context, session.SessionID) (persistence.Inspection, error) {
 	return persistence.Inspection{
 		Header: source.header,
+		Events: source.events,
 	}, source.failure
 }
 
@@ -79,6 +84,37 @@ func TestActivationUsesCurrentParentRatherThanHistoricalOrigin(t *testing.T) {
 	var ownership *SubagentOwnershipError
 	if !errors.As(err, &ownership) {
 		t.Fatalf("active child accepted: %v", err)
+	}
+	directory.current = activationAgent{
+		header: header,
+		parent: &parent,
+		role:   agent.CompanionRole,
+	}
+	if _, err := access.ordinary(context.Background(), header.ID); err != nil {
+		t.Fatalf("live Companion was refused: %v", err)
+	}
+}
+
+func TestActivationDoesNotRestoreCompanionHistoryAsRoot(t *testing.T) {
+	header := session.Header{
+		ID:     "companion",
+		Origin: session.OriginSubagent,
+	}
+	directory := &activationDirectory{}
+	access := &activation{
+		agents: directory,
+		history: activationHistory{
+			header: header,
+			events: []session.Event{{
+				Type: "agent/role",
+				Data: []byte(`{"sessionID":"companion","role":"companion"}`),
+			}},
+		},
+	}
+	_, err := access.ordinary(context.Background(), header.ID)
+	var ownership *SubagentOwnershipError
+	if !errors.As(err, &ownership) || directory.resolves != 1 || directory.opening.ID != "" {
+		t.Fatalf("Companion history was opened as root: err=%v opening=%+v", err, directory.opening)
 	}
 }
 
