@@ -14,9 +14,6 @@ import (
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
 
-// executePending is an Inbox wakeup, not an instruction to enter a Turn or Step.
-type executePending struct{ creationID string }
-
 // capabilityDelivery delivers the result to the receiver chosen by its caller.
 // It carries no business phase or instruction for selecting the next operation.
 type capabilityDelivery struct {
@@ -30,43 +27,6 @@ type capabilityDelivery struct {
 type serviceScope struct {
 	owner *Grain
 	gc    *goakt.GrainContext
-}
-
-func (owner *Grain) services(gc *goakt.GrainContext) agentloop.Services {
-	scope := serviceScope{
-		owner: owner,
-		gc:    gc,
-	}
-	return agentloop.Services{
-		Conversation: sessionPort{scope: scope},
-		Prompts:      promptPort{scope: scope},
-		Middleware:   middlewarePort{scope: scope},
-		Models:       modelPort{scope: scope},
-		Tools:        toolPort{scope: scope},
-		Observer:     scope,
-	}
-}
-
-func (owner *Grain) receiveCapabilities(gc *goakt.GrainContext) bool {
-	switch input := gc.Message().(type) {
-	case executePending:
-		if owner.checkCreation(input.creationID) == nil {
-			err := owner.business.Run(owner.services(gc))
-			if err != nil {
-				owner.services(gc).Observer.ExecutionFailed(err)
-			}
-		}
-	case capabilityDelivery:
-		if owner.checkCreation(input.creationID) != nil {
-			return true
-		}
-		owner.deliveries--
-		delete(owner.cancellations, input.id)
-		input.accept(owner.services(gc))
-	default:
-		return false
-	}
-	return true
 }
 
 // deliver normalizes immediate adapter errors and mailbox replies to a fresh
@@ -83,7 +43,13 @@ func (scope serviceScope) deliver(accept func(agentloop.Services)) error {
 	return err
 }
 
-func (scope serviceScope) request(target *goakt.GrainIdentity, message any, cancellation *cancellationRequest, mode reentrancy.Mode, decode func(any, error) func(agentloop.Services)) error {
+func (scope serviceScope) request(
+	target *goakt.GrainIdentity,
+	message any,
+	cancellation *cancellationRequest,
+	mode reentrancy.Mode,
+	decode func(any, error) func(agentloop.Services),
+) error {
 	identifier := uuid.NewString()
 	creationID := scope.owner.creationID
 	stopped := scope.owner.stopped

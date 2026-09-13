@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"errors"
+
 	"github.com/gorenx/goren/agent"
 )
 
@@ -34,7 +35,11 @@ type RequestError struct {
 
 // NewRequestError captures detached inputs and an immutable registration order.
 func NewRequestError(order []RegistrationID, input agent.RequestFailure) (*RequestError, error) {
-	if input.AgentID == "" || input.Turn <= 0 || input.Step <= 0 || input.Turn > 1<<53-1 || input.Step > 1<<53-1 {
+	if input.AgentID == "" ||
+		input.Turn <= 0 ||
+		input.Step <= 0 ||
+		input.Turn > 1<<53-1 ||
+		input.Step > 1<<53-1 {
 		return nil, errors.New("agent middleware: invalid Agent or Step position")
 	}
 	selection, err := newChain(order)
@@ -76,7 +81,11 @@ func (call *RequestError) Continue(identity RegistrationID) (RequestErrorEffect,
 }
 
 // Complete returns a short-circuit or post-downstream outcome to its caller.
-func (call *RequestError) Complete(identity RegistrationID, result agent.RequestErrorAction, failure error) (RequestErrorEffect, error) {
+func (call *RequestError) Complete(
+	identity RegistrationID,
+	result agent.RequestErrorAction,
+	failure error,
+) (RequestErrorEffect, error) {
 	parent, err := call.order.finish(identity)
 	if err != nil {
 		return nil, err

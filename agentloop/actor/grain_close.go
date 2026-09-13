@@ -8,13 +8,6 @@ import (
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
-func (owner *Grain) checkCreation(identifier string) error {
-	if identifier == "" || owner.creationID != identifier {
-		return errors.New("agentloop: creation is not authorized or current")
-	}
-	return nil
-}
-
 func (owner *Grain) prepareClose(input agentactor.PrepareClose) error {
 	err := owner.checkCreation(input.CreationID)
 	if err != nil {

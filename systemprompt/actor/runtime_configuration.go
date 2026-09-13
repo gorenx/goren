@@ -44,34 +44,39 @@ func (owner *RuntimeGrain) applyConfiguration(gc *goakt.GrainContext, input Appl
 		return
 	}
 	owner.configuration = retained
-	gc.RequestGrain(owner.registry, Prepare{}, goakt.WithRequestTimeout(goakt.DefaultGrainRequestTimeout)).Then(func(payload any, failure error) {
-		if owner.configuration != retained {
-			return
-		}
-		result, valid := payload.(Prepared)
-		if failure == nil {
-			switch {
-			case !valid:
-				failure = errors.New("systemprompt: invalid registration snapshot response")
-			case result.Err != nil:
-				failure = result.Err
-			case result.Version < owner.version:
-				failure = errors.New("systemprompt: stale registration snapshot")
+	gc.RequestGrain(
+		owner.registry,
+		Prepare{},
+		goakt.WithRequestTimeout(goakt.DefaultGrainRequestTimeout),
+	).Then(
+		func(payload any, failure error) {
+			if owner.configuration != retained {
+				return
 			}
-		}
-		if failure == nil {
-			layer := *owner.layer
-			layer.SetBase(result.Snapshot)
-			failure = owner.adoptConfiguration(candidate, &layer)
+			result, valid := payload.(Prepared)
 			if failure == nil {
-				owner.version = result.Version
+				switch {
+				case !valid:
+					failure = errors.New("systemprompt: invalid registration snapshot response")
+				case result.Err != nil:
+					failure = result.Err
+				case result.Version < owner.version:
+					failure = errors.New("systemprompt: stale registration snapshot")
+				}
 			}
-		}
-		owner.configuration = nil
-		retained.Response(Completion{
-			Err: failure,
+			if failure == nil {
+				layer := *owner.layer
+				layer.SetBase(result.Snapshot)
+				failure = owner.adoptConfiguration(candidate, &layer)
+				if failure == nil {
+					owner.version = result.Version
+				}
+			}
+			owner.configuration = nil
+			retained.Response(Completion{
+				Err: failure,
+			})
 		})
-	})
 }
 
 // adoptConfiguration installs one complete projection without changing its

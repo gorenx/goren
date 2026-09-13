@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
 	"github.com/google/uuid"
 
 	"github.com/gorenx/goren/systemprompt"
@@ -92,9 +93,9 @@ func (owner *RuntimeGrain) OnReceive(gc *goakt.GrainContext) {
 			})
 			return
 		}
-		gc.Response(RuntimeView{
-			Config: owner.settings.Clone(),
-		})
+		gc.Response(
+			RuntimeView{Config: owner.settings.Clone()},
+		)
 	case InitializeRuntime:
 		owner.initializeRuntime(gc, incoming)
 	case promptPrepared:
@@ -140,7 +141,8 @@ func (owner *RuntimeGrain) OnReceive(gc *goakt.GrainContext) {
 		}
 		gc.Response(Completion{})
 	case CancelAssembly:
-		if owner.assembly != nil && incoming.ID == owner.assembly.id {
+		if owner.assembly != nil &&
+			incoming.ID == owner.assembly.id {
 			owner.assembly.cancel()
 		}
 		gc.Response(Completion{})
@@ -211,30 +213,32 @@ func (owner *RuntimeGrain) startAssembly(gc *goakt.GrainContext, request Assembl
 		reply:  reply,
 		cancel: cancel,
 	}
-	err = gc.PipeToSelf(func() (payload any, taskErr error) {
-		completed := Assembled{
-			ID: request.ID,
-		}
-		defer func() {
-			if failure := recover(); failure != nil {
-				payload = assemblyFinished{
-					token: token,
-					result: Assembled{
-						ID:  request.ID,
-						Err: fmt.Errorf("systemprompt: assembly panic: %v", failure),
-					},
-				}
+	err = gc.PipeToSelf(
+		func() (payload any, taskErr error) {
+			completed := Assembled{
+				ID: request.ID,
 			}
-		}()
-		completed.Prompt, completed.Err = captured.Assemble(ctx)
-		if ctx.Err() != nil {
-			completed.Err = ctx.Err()
-		}
-		return assemblyFinished{
-			token:  token,
-			result: completed,
-		}, nil
-	})
+			defer func() {
+				if failure := recover(); failure != nil {
+					payload = assemblyFinished{
+						token: token,
+						result: Assembled{
+							ID:  request.ID,
+							Err: fmt.Errorf("systemprompt: assembly panic: %v", failure),
+						},
+					}
+				}
+			}()
+			completed.Prompt, completed.Err = captured.Assemble(ctx)
+			if ctx.Err() != nil {
+				completed.Err = ctx.Err()
+			}
+			return assemblyFinished{
+				token:  token,
+				result: completed,
+			}, nil
+		},
+	)
 	if err != nil {
 		cancel()
 		owner.assembly.reply.Response(Assembled{

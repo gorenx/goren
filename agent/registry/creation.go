@@ -109,7 +109,9 @@ func (input CreateAgent) validate() error {
 	if !input.Role.Valid() || input.Role == agent.CompanionRole && input.Parent == nil {
 		return agent.ErrRole
 	}
-	if input.Parent == nil && input.Options.Metadata.ParentSession != nil || input.Parent != nil && input.Options.Metadata.ParentSession != nil && *input.Options.Metadata.ParentSession != input.Parent.AgentID {
+	if input.Parent == nil && input.Options.Metadata.ParentSession != nil ||
+		input.Parent != nil && input.Options.Metadata.ParentSession != nil &&
+			*input.Options.Metadata.ParentSession != input.Parent.AgentID {
 		return errors.New("agent registry: Session parent does not match creation")
 	}
 	err := input.Handlers.Validate()

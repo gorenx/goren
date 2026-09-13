@@ -205,7 +205,9 @@ func (endpoint *sessionClient) Initialize(gc *goakt.GrainContext, reply chan<- c
 						reply <- componentResult{err: failure}
 						return
 					}
-					if (initialized.Header.ParentSession == nil) != (endpoint.parent == nil) || endpoint.parent != nil && *initialized.Header.ParentSession != endpoint.parent.AgentID {
+					if (initialized.Header.ParentSession == nil) != (endpoint.parent == nil) ||
+						endpoint.parent != nil &&
+							*initialized.Header.ParentSession != endpoint.parent.AgentID {
 						reply <- componentResult{err: errors.New("agent registry: restored Session parent differs")}
 						return
 					}
@@ -217,12 +219,17 @@ func (endpoint *sessionClient) Initialize(gc *goakt.GrainContext, reply chan<- c
 }
 
 func (endpoint *sessionClient) Close(gc *goakt.GrainContext, reply chan<- error) {
-	requestComponent(gc, endpoint.owner, sessionregistry.CloseSession{
-		SessionID:  endpoint.input.SessionID,
-		CreationID: endpoint.input.CreationID,
-	}, func(gc *goakt.GrainContext, closed sessionactor.Closed, failure error) {
-		reply <- errors.Join(failure, closed.Err)
-	})
+	requestComponent(
+		gc,
+		endpoint.owner,
+		sessionregistry.CloseSession{
+			SessionID:  endpoint.input.SessionID,
+			CreationID: endpoint.input.CreationID,
+		},
+		func(gc *goakt.GrainContext, closed sessionactor.Closed, failure error) {
+			reply <- errors.Join(failure, closed.Err)
+		},
+	)
 }
 
 type promptClient struct {
@@ -277,35 +284,46 @@ func (endpoint *modelClient) Runtime() *goakt.GrainIdentity { return endpoint.ow
 
 func (endpoint *modelClient) Initialize(gc *goakt.GrainContext, reply chan<- componentResult) {
 	if endpoint.options == nil {
-		requestComponent(gc, endpoint.owner, llmactor.InitializeAgent{
-			AgentID:    string(endpoint.creation.AgentID),
-			CreationID: endpoint.creation.CreationID,
-			Session:    endpoint.conversation.Runtime(),
-		}, func(_ *goakt.GrainContext, initialized llmactor.Completion, failure error) {
-			reply <- componentResult{err: errors.Join(failure, initialized.Err)}
-		})
+		requestComponent(
+			gc, endpoint.owner,
+			llmactor.InitializeAgent{
+				AgentID:    string(endpoint.creation.AgentID),
+				CreationID: endpoint.creation.CreationID,
+				Session:    endpoint.conversation.Runtime(),
+			},
+			func(_ *goakt.GrainContext, initialized llmactor.Completion, failure error) {
+				reply <- componentResult{err: errors.Join(failure, initialized.Err)}
+			},
+		)
 		return
 	}
 	// Explicit creation settings replace the previous lifetime's selection.
 	// Resolve omitted fields against deployment defaults, never Session history.
-	requestComponent(gc, endpoint.owner, llmactor.ResolveAgent{
-		Overrides: llm.CallConfig{
-			Provider:  endpoint.options.Provider,
-			Model:     endpoint.options.Model,
-			MaxTokens: endpoint.options.Clone().MaxTokens,
+	requestComponent(
+		gc, endpoint.owner,
+		llmactor.ResolveAgent{
+			Overrides: llm.CallConfig{
+				Provider:  endpoint.options.Provider,
+				Model:     endpoint.options.Model,
+				MaxTokens: endpoint.options.Clone().MaxTokens,
+			},
 		},
-	}, func(gc *goakt.GrainContext, resolved llmactor.AgentConfiguration, failure error) {
-		if failure = errors.Join(failure, resolved.Err); failure != nil {
-			reply <- componentResult{err: failure}
-			return
-		}
-		requestComponent(gc, endpoint.owner, llmactor.SetConfiguration{
-			AgentID: string(endpoint.creation.AgentID),
-			Config:  resolved.Resolved.Config,
-		}, func(_ *goakt.GrainContext, configured llmactor.ConfigurationResult, failure error) {
-			reply <- componentResult{err: errors.Join(failure, configured.Err)}
-		})
-	})
+		func(gc *goakt.GrainContext, resolved llmactor.AgentConfiguration, failure error) {
+			if failure = errors.Join(failure, resolved.Err); failure != nil {
+				reply <- componentResult{err: failure}
+				return
+			}
+			requestComponent(
+				gc, endpoint.owner,
+				llmactor.SetConfiguration{
+					AgentID: string(endpoint.creation.AgentID),
+					Config:  resolved.Resolved.Config,
+				},
+				func(_ *goakt.GrainContext, configured llmactor.ConfigurationResult, failure error) {
+					reply <- componentResult{err: errors.Join(failure, configured.Err)}
+				})
+		},
+	)
 }
 
 type agentClient struct {

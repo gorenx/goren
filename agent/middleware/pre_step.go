@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"errors"
+
 	"github.com/gorenx/goren/agent"
 )
 
@@ -34,7 +35,11 @@ type PreStep struct {
 
 // NewPreStep captures detached inputs and an immutable registration order.
 func NewPreStep(order []RegistrationID, input agent.PreStepInput, terminal agent.PreStepDecision) (*PreStep, error) {
-	if input.AgentID == "" || input.Turn <= 0 || input.Step <= 0 || input.Turn > 1<<53-1 || input.Step > 1<<53-1 {
+	if input.AgentID == "" ||
+		input.Turn <= 0 ||
+		input.Step <= 0 ||
+		input.Turn > 1<<53-1 ||
+		input.Step > 1<<53-1 {
 		return nil, errors.New("agent middleware: invalid Agent or Step position")
 	}
 	selection, err := newChain(order)
