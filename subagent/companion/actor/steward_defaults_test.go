@@ -31,8 +31,8 @@ func TestDefaultCompanionsStayIsolatedAndRespectDurableTombstones(t *testing.T) 
 		Section: settings.CompanionSection,
 		Name:    "reviewer",
 	})
-	installer, first, firstInput := installParent(t, fixture, fixture.authority)
-	awaitInstallation(t, fixture, installer, firstInput.Creation, Ready)
+	stewardProvider, first, firstInput := installParent(t, fixture, fixture.authority)
+	awaitInstallation(t, fixture, stewardProvider, firstInput.Creation, Ready)
 	firstChild := awaitPhase(t, first, "reviewer", Ready)
 	secondInput := firstInput
 	secondInput.Creation = agentregistry.Creation{
@@ -48,7 +48,7 @@ func TestDefaultCompanionsStayIsolatedAndRespectDurableTombstones(t *testing.T) 
 		target: secondReady.Components[0].Runtime,
 		parent: secondInput.Creation,
 	}
-	awaitInstallation(t, fixture, installer, secondInput.Creation, Ready)
+	awaitInstallation(t, fixture, stewardProvider, secondInput.Creation, Ready)
 	secondChild := awaitPhase(t, second, "reviewer", Ready)
 	if firstChild.Companion.ChildSessionID == secondChild.Companion.ChildSessionID ||
 		firstChild.Companion.Configuration == secondChild.Companion.Configuration ||
@@ -83,7 +83,7 @@ func TestDefaultCompanionsStayIsolatedAndRespectDurableTombstones(t *testing.T) 
 		target: thirdReady.Components[0].Runtime,
 		parent: thirdInput.Creation,
 	}
-	awaitInstallation(t, fixture, installer, thirdInput.Creation, Ready)
+	awaitInstallation(t, fixture, stewardProvider, thirdInput.Creation, Ready)
 	thirdChild := awaitPhase(t, third, "reviewer", Ready)
 	if thirdChild.Companion.SourceRevision != currentVersion ||
 		thirdChild.Companion.ChildSessionID == firstChild.Companion.ChildSessionID ||
@@ -145,7 +145,7 @@ func TestDefaultCompanionsStayIsolatedAndRespectDurableTombstones(t *testing.T) 
 			target: ready.Components[0].Runtime,
 			parent: input.Creation,
 		}
-		awaitInstallation(t, fixture, installer, input.Creation, Ready)
+		awaitInstallation(t, fixture, stewardProvider, input.Creation, Ready)
 		retained := awaitPhase(t, active, "reviewer", Stopped)
 		if retained.Companion.ChildSessionID != observed.previous.Companion.ChildSessionID ||
 			retained.Companion.Removed != observed.removed ||
@@ -186,8 +186,8 @@ func TestDefaultPreparationFailureIsVisibleWithoutCreatingChild(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	installer, sender, input := installParent(t, fixture, fixture.authority)
-	awaitInstallation(t, fixture, installer, input.Creation, Ready)
+	stewardProvider, sender, input := installParent(t, fixture, fixture.authority)
+	awaitInstallation(t, fixture, stewardProvider, input.Creation, Ready)
 	failed := awaitPhase(t, sender, "reviewer", StartFailed)
 	if failed.Err == nil || failed.Persisted || failed.Creation.CreationID != "" {
 		t.Fatalf("unresolved policy started an Agent or hid failure: %+v", failed)
@@ -275,8 +275,8 @@ func TestDefaultPreparationRetrySettlesBeforeParentClose(t *testing.T) {
 			close(barrier.release)
 		}
 	}()
-	installer, sender, input := installParent(t, fixture, fixture.authority, barrier)
-	awaitInstallation(t, fixture, installer, input.Creation, Ready)
+	stewardProvider, sender, input := installParent(t, fixture, fixture.authority, barrier)
+	awaitInstallation(t, fixture, stewardProvider, input.Creation, Ready)
 	awaitPhase(t, sender, "reviewer", StartFailed)
 	if _, err := sender.Restart(t.Context(), Restart{
 		Name: "reviewer",
@@ -337,8 +337,8 @@ func TestDefaultCompanionWithoutNamedValuesUsesCapabilityDefaults(t *testing.T) 
 	}); err != nil {
 		t.Fatal(err)
 	}
-	installer, sender, input := installParent(t, fixture, fixture.authority)
-	awaitInstallation(t, fixture, installer, input.Creation, Ready)
+	stewardProvider, sender, input := installParent(t, fixture, fixture.authority)
+	awaitInstallation(t, fixture, stewardProvider, input.Creation, Ready)
 	current := awaitPhase(t, sender, "minimal", Ready)
 	if !current.Persisted || current.Companion.Configuration == "" {
 		t.Fatalf("default configuration was not saved for the child: %+v", current)

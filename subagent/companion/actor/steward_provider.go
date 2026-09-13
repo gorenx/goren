@@ -16,15 +16,15 @@ import (
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
 
-// InstallerName identifies the Companion installer in the ActorSystem.
-const InstallerName = "companions"
+// StewardProviderName identifies the shared Steward provider in the ActorSystem.
+const StewardProviderName = "companions"
 
-// Dependencies are the capabilities borrowed by Installer; their owners retain
+// Dependencies are the capabilities borrowed by StewardProvider; their owners retain
 // configuration and resource lifetimes.
 type Dependencies struct {
 	// Registry is the Agent Registry endpoint for admission, readiness and resource closure.
 	Registry *goakt.GrainIdentity
-	// Settings owns named configuration; Installer borrows it for Steward.
+	// Settings owns named configuration; StewardProvider borrows it for Steward.
 	Settings settings.Settings
 	// Creator enters ordinary child creation or recovery using a configuration name.
 	Creator ChildCreator
@@ -44,13 +44,12 @@ const (
 	grainStopped
 )
 
-// installation is Companion support bound to one exact parent lifetime. It
-// retains the routes and outstanding deactivation obligation; Steward owns the
-// Companion relationships and their execution progress.
-type installation struct {
-	// parent identifies the lifetime that owns this Companion installation.
+// stewardSlot reserves one parent's Steward route and tracks its release.
+// It can remain as a stopped tombstone without any Steward Grain.
+type stewardSlot struct {
+	// parent identifies the lifetime that owns this slot.
 	parent agentregistry.Creation
-	// role is the admitted parent role checked on repeated installation and shutdown.
+	// role is the admitted parent role checked on repeated start and shutdown.
 	role agent.Role
 	// agent is the parent AgentLoop endpoint from StartComponent.Agent, retained for retry validation.
 	agent *goakt.GrainIdentity
@@ -62,22 +61,22 @@ type installation struct {
 	stage releaseStage
 	// operation is the active release attempt; concurrent stop requests join its waiters.
 	operation *release
-	// failure retains the last shutdown error so the installation can retry remaining release work.
+	// failure retains the last shutdown error so remaining release work can retry.
 	failure error
-	// waiters share this installation's stop result and are cleared after success or failure.
+	// waiters share this slot's stop result and are cleared after success or failure.
 	waiters []*goakt.GrainReply
 }
 
-// release is one in-flight attempt to discharge an installation's obligation.
+// release is one in-flight attempt to discharge a Steward slot's obligation.
 type release struct {
 	// cancel ends this release attempt's wait without certifying business resource release.
 	cancel context.CancelFunc
 }
 
 type released struct {
-	// entry identifies the original installation so late results cannot affect a replacement.
-	entry *installation
-	// operation identifies the attempt; only the installation's current attempt may settle it.
+	// entry identifies the original slot so late results cannot affect a replacement.
+	entry *stewardSlot
+	// operation identifies the attempt; only the slot's current attempt may settle it.
 	operation *release
 	// stage records actual release progress, including checkpoints confirmed before failure.
 	stage releaseStage
@@ -85,23 +84,24 @@ type released struct {
 	err error
 }
 
-// Installer installs and deactivates Companion support for each ordinary parent.
-// Steward owns Companion management; this adapter retains only installation and
-// release responsibility while using the ordinary Agent component protocol.
-type Installer struct {
+// StewardProvider supplies one Steward route per ordinary parent through the
+// Agent component protocol. Steward owns Companion management; the provider
+// retains only exact-parent routing and release responsibility.
+type StewardProvider struct {
 	// dependencies are borrowed once from composition and cannot be replaced by installation requests.
 	dependencies *Dependencies
-	// installations retains per-parent routing and release responsibility, fenced by CreationID.
-	installations map[session.SessionID]*installation
+	// slots retain per-parent Steward routes and release responsibility, fenced by CreationID.
+	slots map[session.SessionID]*stewardSlot
 }
 
-// Register provides the installer endpoint before any parent is admitted.
-// Companion installation begins only when Agent Registry sends StartComponent.
+// Register provides the shared component owner before any parent is admitted.
+// A parent Steward is created only after Agent Registry sends StartComponent.
 func Register(ctx context.Context, system goakt.ActorSystem, input Dependencies) (*goakt.GrainIdentity, error) {
 	if ctx == nil || system == nil {
 		return nil, companions.ErrInvalid
 	}
-	target, err := goakt.GrainOf[*Installer](ctx, system, InstallerName,
+	target, err := goakt.GrainOf[*StewardProvider](
+		ctx, system, StewardProviderName,
 		goakt.WithLongLivedGrain(),
 		goakt.WithGrainReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.AllowAll))),
 	)
@@ -116,21 +116,21 @@ func Register(ctx context.Context, system goakt.ActorSystem, input Dependencies)
 }
 
 // OnActivate waits for composition to provide the borrowed capabilities.
-func (*Installer) OnActivate(context.Context, *goakt.GrainProps) error { return nil }
+func (*StewardProvider) OnActivate(context.Context, *goakt.GrainProps) error { return nil }
 
 // OnDeactivate releases request waiters without claiming business cleanup.
-func (owner *Installer) OnDeactivate(context.Context, *goakt.GrainProps) error {
-	for _, entry := range owner.installations {
+func (owner *StewardProvider) OnDeactivate(context.Context, *goakt.GrainProps) error {
+	for _, entry := range owner.slots {
 		if entry.operation != nil {
 			entry.operation.cancel()
 		}
-		entry.respond(errors.New("companion: installer stopped during release"))
+		entry.respond(errors.New("companion: StewardProvider stopped during release"))
 	}
 	return nil
 }
 
 // OnReceive forwards preparation to Steward and serializes framework release.
-func (owner *Installer) OnReceive(gc *goakt.GrainContext) {
+func (owner *StewardProvider) OnReceive(gc *goakt.GrainContext) {
 	switch input := gc.Message().(type) {
 	case Dependencies:
 		var failure error
@@ -163,7 +163,7 @@ func (owner *Installer) OnReceive(gc *goakt.GrainContext) {
 	}
 }
 
-func (owner *Installer) install(gc *goakt.GrainContext, input agentactor.StartComponent) {
+func (owner *StewardProvider) install(gc *goakt.GrainContext, input agentactor.StartComponent) {
 	if owner.dependencies == nil ||
 		input.AgentID == "" ||
 		input.CreationID == "" ||
@@ -183,12 +183,18 @@ func (owner *Installer) install(gc *goakt.GrainContext, input agentactor.StartCo
 		})
 		return
 	}
-	entry := owner.installations[input.AgentID]
-	if entry != nil && (entry.stage != grainStopped || entry.parent.CreationID == input.CreationID) {
+	entry := owner.slots[input.AgentID]
+	if entry != nil &&
+		(entry.stage != grainStopped || entry.parent.CreationID == input.CreationID) {
+
 		if entry.parent.CreationID != input.CreationID ||
-			entry.role != input.Role || entry.stage != releaseRequired ||
-			entry.operation != nil || entry.failure != nil ||
-			!entry.agent.Equal(input.Agent) || !entry.session.Equal(input.Session) {
+			entry.role != input.Role ||
+			entry.stage != releaseRequired ||
+			entry.operation != nil ||
+			entry.failure != nil ||
+			!entry.agent.Equal(input.Agent) ||
+			!entry.session.Equal(input.Session) {
+
 			gc.Response(agentactor.ComponentStarted{
 				Err: agentregistry.ErrCreation,
 			})
@@ -209,7 +215,7 @@ func (owner *Installer) install(gc *goakt.GrainContext, input agentactor.StartCo
 			})
 			return
 		}
-		entry = &installation{
+		entry = &stewardSlot{
 			parent: agentregistry.Creation{
 				AgentID:    input.AgentID,
 				CreationID: input.CreationID,
@@ -219,10 +225,10 @@ func (owner *Installer) install(gc *goakt.GrainContext, input agentactor.StartCo
 			session: input.Session,
 			steward: target,
 		}
-		if owner.installations == nil {
-			owner.installations = make(map[session.SessionID]*installation)
+		if owner.slots == nil {
+			owner.slots = make(map[session.SessionID]*stewardSlot)
 		}
-		owner.installations[input.AgentID] = entry
+		owner.slots[input.AgentID] = entry
 	}
 	reply := gc.DeferResponse()
 	if reply == nil {
@@ -262,8 +268,8 @@ func (owner *Installer) install(gc *goakt.GrainContext, input agentactor.StartCo
 		})
 }
 
-func (owner *Installer) inspect(gc *goakt.GrainContext, parent agentregistry.Creation) {
-	entry := owner.installations[parent.AgentID]
+func (owner *StewardProvider) inspect(gc *goakt.GrainContext, parent agentregistry.Creation) {
+	entry := owner.slots[parent.AgentID]
 	if entry == nil || entry.parent.CreationID != parent.CreationID {
 		gc.Response(Status{
 			Err: agentregistry.ErrCreation,
@@ -317,7 +323,7 @@ func (owner *Installer) inspect(gc *goakt.GrainContext, parent agentregistry.Cre
 	})
 }
 
-func (owner *Installer) stop(gc *goakt.GrainContext, input agentactor.StopComponent) {
+func (owner *StewardProvider) stop(gc *goakt.GrainContext, input agentactor.StopComponent) {
 	if input.AgentID == "" || input.CreationID == "" || !input.Role.Valid() {
 		gc.Response(agentactor.ComponentStopped{
 			Err: companions.ErrInvalid,
@@ -328,12 +334,12 @@ func (owner *Installer) stop(gc *goakt.GrainContext, input agentactor.StopCompon
 		gc.Response(agentactor.ComponentStopped{})
 		return
 	}
-	entry := owner.installations[input.AgentID]
+	entry := owner.slots[input.AgentID]
 	if entry == nil {
-		if owner.installations == nil {
-			owner.installations = make(map[session.SessionID]*installation)
+		if owner.slots == nil {
+			owner.slots = make(map[session.SessionID]*stewardSlot)
 		}
-		owner.installations[input.AgentID] = &installation{
+		owner.slots[input.AgentID] = &stewardSlot{
 			parent: agentregistry.Creation{
 				AgentID:    input.AgentID,
 				CreationID: input.CreationID,
@@ -368,7 +374,7 @@ func (owner *Installer) stop(gc *goakt.GrainContext, input agentactor.StopCompon
 	owner.release(gc, entry)
 }
 
-func (owner *Installer) release(gc *goakt.GrainContext, entry *installation) {
+func (owner *StewardProvider) release(gc *goakt.GrainContext, entry *stewardSlot) {
 	ctx, cancel := context.WithCancel(context.Background())
 	operation := &release{
 		cancel: cancel,
@@ -410,7 +416,7 @@ func (owner *Installer) release(gc *goakt.GrainContext, entry *installation) {
 	}
 }
 
-func (entry *installation) respond(failure error) {
+func (entry *stewardSlot) respond(failure error) {
 	for _, reply := range entry.waiters {
 		reply.Response(agentactor.ComponentStopped{
 			Err: failure,

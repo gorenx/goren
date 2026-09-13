@@ -156,7 +156,7 @@ func TestStewardCloseDuringRecoveryDoesNotStartChildren(t *testing.T) {
 	if err := fixture.client.Close(ctx); err != nil {
 		t.Fatal("repeated close failed", err)
 	}
-	// Stop the old Grain before starting recovery, as Installer does.
+	// Stop the old Grain before starting recovery, as StewardProvider does.
 	// The old transport reply cannot reach the new recovery operation.
 	fixture.stopSteward(t)
 	endpoint, err = acceptSteward(ctx, fixture.system, start{

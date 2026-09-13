@@ -152,7 +152,7 @@ func OpenClient(
 		return nil, agent.ErrRole
 	}
 	for _, component := range ready.Components {
-		if component.Owner != nil && component.Owner.Name() == InstallerName && component.Runtime != nil {
+		if component.Owner != nil && component.Owner.Name() == StewardProviderName && component.Runtime != nil {
 			return &Client{
 				system: system,
 				target: component.Runtime,

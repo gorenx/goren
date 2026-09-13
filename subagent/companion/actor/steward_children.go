@@ -3,11 +3,13 @@ package companionactor
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/gorenx/goren/agent"
 	agentactor "github.com/gorenx/goren/agent/actor"
 	agentregistry "github.com/gorenx/goren/agent/registry"
+	"github.com/gorenx/goren/subagent/companion/msgcar"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
@@ -95,17 +97,28 @@ func (owner *steward) startChild(gc *goakt.GrainContext, entry *companion) {
 	}
 	entry.starting = operation
 	creator := owner.creator
+	system := gc.ActorSystem()
 	parent := owner.parent
 	child := entry.creation
 	configurationName := entry.relationship.Configuration
+	name := entry.relationship.Name
 	cwd := owner.cwd
 	err := gc.PipeToSelf(func() (any, error) {
 		ready, failure := creator.Start(ctx, parent, child, configurationName, cwd)
 		if failure == nil {
 			failure = ready.Err
 		}
-		if failure == nil && (ready.Creation != child || ready.Executor == nil || ready.Registration.ID != child.AgentID || ready.Registration.Role != agent.CompanionRole || ready.Registration.ParentID == nil || *ready.Registration.ParentID != parent.AgentID) {
+		if failure == nil &&
+			(ready.Creation != child ||
+				ready.Executor == nil ||
+				ready.Registration.ID != child.AgentID ||
+				ready.Registration.Role != agent.CompanionRole ||
+				ready.Registration.ParentID == nil ||
+				*ready.Registration.ParentID != parent.AgentID) {
 			failure = errors.New("companion: child creation returned inconsistent identity")
+		}
+		if failure == nil && strings.EqualFold(name, "memory") {
+			failure = msgcar.Start(ctx, system, parent, child, ready.Executor)
 		}
 		return started{
 			entry:     entry,
@@ -163,55 +176,64 @@ func (owner *steward) closeChild(gc *goakt.GrainContext, entry *companion, finis
 	authority := owner.registry
 	creation := entry.creation
 	executor := entry.executor
-	err := gc.PipeToSelf(func() (any, error) {
-		var failure error
-		if finishCurrent && executor != nil {
-			prepared, prepareErr := ask[agentactor.Prepared](
-				ctx,
-				system,
-				executor,
-				agentactor.PrepareClose{
-					CreationID:    creation.CreationID,
-					FinishCurrent: true,
-				},
-			)
-			failure = errors.Join(prepareErr, prepared.Err)
-			if failure != nil && ctx.Err() == nil {
-				// Another ordinary close may have already released this exact child.
-				// Only a successful Registry reply can supersede a stale endpoint failure.
-				admitted, admissionErr := ask[agentregistry.Completion](
+	stopCar := strings.EqualFold(entry.relationship.Name, "memory")
+	err := gc.PipeToSelf(
+		func() (any, error) {
+			var failure error
+			if stopCar {
+				failure = msgcar.Stop(context.Background(), system, creation)
+			}
+			if failure == nil && finishCurrent && executor != nil {
+				prepared, prepareErr := ask[agentactor.Prepared](
 					ctx,
 					system,
-					authority,
-					agentregistry.CheckAdmission{
+					executor,
+					agentactor.PrepareClose{
+						CreationID:    creation.CreationID,
+						FinishCurrent: true,
+					},
+				)
+				failure = errors.Join(prepareErr, prepared.Err)
+				if failure != nil && ctx.Err() == nil {
+					// Another ordinary close may have already released this exact child.
+					// Only a successful Registry reply can supersede a stale endpoint failure.
+					admitted, admissionErr := ask[agentregistry.Completion](
+						ctx,
+						system,
+						authority,
+						agentregistry.CheckAdmission{
+							Creation: creation,
+						},
+					)
+					if admissionErr == nil && (errors.Is(admitted.Err, agentregistry.ErrCreation) ||
+						errors.Is(admitted.Err, agent.ErrClosing)) {
+						failure = nil
+					}
+				}
+			}
+			// Parent shutdown cancels a natural-completion wait and proceeds through
+			// ordinary Registry cancellation. It cannot abandon resource settlement.
+			if failure == nil || ctx.Err() != nil {
+				released, releaseErr := ask[agentactor.Closed](
+					context.Background(),
+					system, authority,
+					agentregistry.CloseAgent{
 						Creation: creation,
 					},
 				)
-				if admissionErr == nil && (errors.Is(admitted.Err, agentregistry.ErrCreation) ||
-					errors.Is(admitted.Err, agent.ErrClosing)) {
+				failure = errors.Join(releaseErr, released.Err)
+				// Start has already settled: no matching reservation means this exact
+				// creation owns no remaining resources. Never target a replacement.
+				if errors.Is(failure, agentregistry.ErrCreation) {
 					failure = nil
 				}
 			}
-		}
-		// Parent shutdown cancels a natural-completion wait and proceeds through
-		// ordinary Registry cancellation. It cannot abandon resource settlement.
-		if failure == nil || ctx.Err() != nil {
-			released, releaseErr := ask[agentactor.Closed](context.Background(), system, authority, agentregistry.CloseAgent{
-				Creation: creation,
-			})
-			failure = errors.Join(releaseErr, released.Err)
-			// Start has already settled: no matching reservation means this exact
-			// creation owns no remaining resources. Never target a replacement.
-			if errors.Is(failure, agentregistry.ErrCreation) {
-				failure = nil
-			}
-		}
-		return closed{
-			entry:     entry,
-			operation: operation,
-			err:       failure,
-		}, nil
-	})
+			return closed{
+				entry:     entry,
+				operation: operation,
+				err:       failure,
+			}, nil
+		})
 	if err != nil {
 		cancel()
 		entry.closing = nil
@@ -272,12 +294,18 @@ func (owner *steward) close(gc *goakt.GrainContext) {
 }
 
 func (owner *steward) finishClose() {
-	if owner.state != shuttingDown || len(owner.waiters) == 0 || len(owner.deliveries) != 0 || owner.recovery != nil {
+	if owner.state != shuttingDown ||
+		len(owner.waiters) == 0 ||
+		len(owner.deliveries) != 0 ||
+		owner.recovery != nil {
 		return
 	}
 	var failures []error
 	for _, entry := range owner.entries {
-		if entry.starting != nil || entry.closing != nil || entry.mutation != nil && entry.mutation.stage == writeInFlight {
+		if entry.starting != nil ||
+			entry.closing != nil ||
+			entry.mutation != nil &&
+				entry.mutation.stage == writeInFlight {
 			return
 		}
 		if entry.creation.CreationID != "" {

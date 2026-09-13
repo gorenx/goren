@@ -727,7 +727,7 @@ func TestStewardReenableSettlesCancelledStartupBeforeNewCreation(t *testing.T) {
 	}
 }
 
-// acceptSteward sends the same asynchronous start message as Installer.
+// acceptSteward sends the same asynchronous start message as StewardProvider.
 func acceptSteward(ctx context.Context, system goakt.ActorSystem, input start) (*Client, error) {
 	target, err := stewardRoute(ctx, system, input.Parent)
 	if err != nil {

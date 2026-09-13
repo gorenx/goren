@@ -127,11 +127,14 @@ func (owner *Server) initializeAPI(ctx context.Context, constructors *toolactor.
 		Settings: preferences,
 		Storage:  owner.sessions,
 	}
-	installer, err := companionactor.Register(ctx, system, companionactor.Dependencies{
-		Registry: owner.agents,
-		Settings: preferences,
-		Creator:  creator,
-	})
+	stewardProvider, err := companionactor.Register(
+		ctx, system,
+		companionactor.Dependencies{
+			Registry: owner.agents,
+			Settings: preferences,
+			Creator:  creator,
+		},
+	)
 	if err != nil {
 		return err
 	}
@@ -243,7 +246,7 @@ func (owner *Server) initializeAPI(ctx context.Context, constructors *toolactor.
 			PromptRegistry:  prompts,
 			ToolsRegistry:   tools,
 			Commands:        commands,
-			Components:      []*goakt.GrainIdentity{titleOwner, installer},
+			Components:      []*goakt.GrainIdentity{titleOwner, stewardProvider},
 		},
 		timeout,
 	)

@@ -81,7 +81,7 @@ func awaitInstallation(t *testing.T, fixture *stewardship, endpoint *goakt.Grain
 	}
 }
 
-func TestInstallerParentCloseSettlesChildren(t *testing.T) {
+func TestStewardProviderParentCloseSettlesChildren(t *testing.T) {
 	for _, stage := range []string{"ready", "preparing"} {
 		t.Run(stage, func(t *testing.T) {
 			fixture := newStewardship(t)
@@ -214,7 +214,7 @@ func (owner *preparationBarrier) OnReceive(gc *goakt.GrainContext) {
 	}
 }
 
-func TestInstallerPreparationDoesNotBlockParent(t *testing.T) {
+func TestStewardProviderPreparationDoesNotBlockParent(t *testing.T) {
 	for _, outcome := range []string{"cancel", "failure"} {
 		t.Run(outcome, func(t *testing.T) {
 			fixture := newStewardship(t)
@@ -284,7 +284,7 @@ func TestInstallerPreparationDoesNotBlockParent(t *testing.T) {
 	}
 }
 
-func TestInstallerReplacementRejectsOldCreation(t *testing.T) {
+func TestStewardProviderReplacementRejectsOldCreation(t *testing.T) {
 	fixture := newStewardship(t)
 	endpoint, sender, input := installParent(t, fixture, fixture.authority)
 	awaitInstallation(t, fixture, endpoint, input.Creation, Ready)

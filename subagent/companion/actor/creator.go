@@ -84,10 +84,10 @@ func (owner *Creator) Start(
 	var manager *goakt.GrainIdentity
 	components := make([]*goakt.GrainIdentity, 0, len(current.Components))
 	for _, entry := range current.Components {
-		if entry.Owner.Name() == InstallerName {
+		if entry.Owner.Name() == StewardProviderName {
 			manager = entry.Runtime
 		}
-		if entry.Owner.Name() != InstallerName {
+		if entry.Owner.Name() != StewardProviderName {
 			components = append(components, entry.Owner)
 		}
 	}
