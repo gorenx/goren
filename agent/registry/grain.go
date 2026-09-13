@@ -85,7 +85,8 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 		result.deliver(gc)
 		return
 	}
-	if owner.receiveConfiguration(gc) || owner.receiveLifecycle(gc) ||
+	if owner.receiveConfiguration(gc) ||
+		owner.receiveLifecycle(gc) ||
 		owner.receiveIdentity(gc) ||
 		owner.receiveAdmission(gc) {
 		return
@@ -137,7 +138,9 @@ func (owner *Grain) reserveAgent(input ReserveAgent) error {
 		return ErrCreation
 	}
 	previous, found := owner.creations[input.Creation.AgentID]
-	if found && owner.directory.IsClosed(input.Creation.AgentID) && previous.creationID == input.Creation.CreationID {
+	if found &&
+		owner.directory.IsClosed(input.Creation.AgentID) &&
+		previous.creationID == input.Creation.CreationID {
 		return ErrCreation
 	}
 	var parentID *session.SessionID
@@ -157,23 +160,27 @@ func (owner *Grain) reserveAgent(input ReserveAgent) error {
 	}
 	existing, found := owner.creations[input.Creation.AgentID]
 	if found && !owner.directory.IsClosed(input.Creation.AgentID) {
-		if existing.creationID != input.Creation.CreationID || existing.parentCreationID != parentCreationID {
+		if existing.creationID != input.Creation.CreationID ||
+			existing.parentCreationID != parentCreationID {
 			return ErrCreation
 		}
 		registered, _ := owner.directory.Get(input.Creation.AgentID)
 		if registered.Role != input.Role {
 			return agent.ErrRole
 		}
-		if (registered.ParentID == nil) != (parentID == nil) || parentID != nil && *registered.ParentID != *parentID {
+		if (registered.ParentID == nil) != (parentID == nil) ||
+			parentID != nil && *registered.ParentID != *parentID {
 			return ErrCreation
 		}
 		return owner.directory.CheckAdmission(input.Creation.AgentID)
 	}
-	err := owner.directory.Register(agent.Registration{
-		Role:     input.Role,
-		ID:       input.Creation.AgentID,
-		ParentID: parentID,
-	})
+	err := owner.directory.Register(
+		agent.Registration{
+			Role:     input.Role,
+			ID:       input.Creation.AgentID,
+			ParentID: parentID,
+		},
+	)
 	if err != nil {
 		return err
 	}
@@ -226,13 +233,16 @@ func (owner *Grain) claim(input agentactor.Claim) error {
 		}
 	}
 	if current.services == nil {
-		installExecution(current.releases, &agentClient{
-			creation: Creation{
-				AgentID:    input.AgentID,
-				CreationID: input.CreationID,
+		installExecution(
+			current.releases,
+			&agentClient{
+				creation: Creation{
+					AgentID:    input.AgentID,
+					CreationID: input.CreationID,
+				},
+				identity: input.Executor,
 			},
-			identity: input.Executor,
-		})
+		)
 	}
 	current.instanceID = input.InstanceID
 	current.executor = input.Executor
@@ -268,7 +278,8 @@ func (owner *Grain) receiveAdmission(gc *goakt.GrainContext) bool {
 			Err: err,
 		})
 	case BeginClose:
-		if entry, found := owner.creations[input.Creation.AgentID]; found && entry.creationID == input.Creation.CreationID {
+		entry, found := owner.creations[input.Creation.AgentID]
+		if found && entry.creationID == input.Creation.CreationID {
 			owner.cancelRestarts(input.Creation.AgentID)
 		}
 		gc.Response(owner.beginClose(input.Creation))
@@ -317,7 +328,8 @@ func (owner *Grain) receiveLifecycle(gc *goakt.GrainContext) bool {
 	case FindAgent:
 		owner.findAgent(gc, input)
 	case CloseAgent:
-		if entry, found := owner.creations[input.Creation.AgentID]; found && entry.creationID == input.Creation.CreationID {
+		entry, found := owner.creations[input.Creation.AgentID]
+		if found && entry.creationID == input.Creation.CreationID {
 			owner.cancelRestarts(input.Creation.AgentID)
 		}
 		owner.closeAgent(gc, input)

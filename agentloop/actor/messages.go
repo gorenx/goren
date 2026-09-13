@@ -75,10 +75,6 @@ type WhenIdle struct {
 	CreationID string
 }
 
-// RuntimeName returns this service's stable address within a Session lifetime.
-// Business identity is carried explicitly in messages, never parsed from this name.
-func RuntimeName(identifier string) string { return identifier + ".agentloop" }
-
 // Promote moves one queued next-turn occurrence through a single Session commit.
 type Promote struct {
 	CreationID string

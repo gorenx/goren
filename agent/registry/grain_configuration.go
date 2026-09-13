@@ -219,7 +219,8 @@ func (owner *Grain) restartChanged(gc *goakt.GrainContext) {
 		return
 	}
 	for identifier, entry := range owner.creations {
-		if owner.directory.IsClosed(identifier) || entry.activation == nil || entry.activation.values == nil {
+		if owner.directory.IsClosed(identifier) ||
+			entry.activation == nil || entry.activation.values == nil {
 			continue
 		}
 		values, err := configurationValues(owner.preferences.directory, entry.activation.input.ConfigurationName)
@@ -232,12 +233,19 @@ func (owner *Grain) restartChanged(gc *goakt.GrainContext) {
 		if manager := entry.activation.input.Manager; manager != nil {
 			identity := entry.activation.input.Creation
 			logger := gc.ActorSystem().Logger()
-			gc.RequestGrain(manager, RestartChild{Creation: identity}, goakt.WithRequestTimeout(0), goakt.WithReentrancyMode(reentrancy.AllowAll)).Then(func(payload any, failure error) {
-				result, valid := payload.(Completion)
-				if failure != nil || !valid || result.Err != nil {
-					logger.Error("agent registry: child configuration restart was not admitted")
-				}
-			})
+			gc.RequestGrain(
+				manager,
+				RestartChild{Creation: identity},
+				goakt.WithRequestTimeout(0),
+				goakt.WithReentrancyMode(reentrancy.AllowAll),
+			).Then(
+				func(payload any, failure error) {
+					result, valid := payload.(Completion)
+					if failure != nil || !valid || result.Err != nil {
+						logger.Error("agent registry: child configuration restart was not admitted")
+					}
+				},
+			)
 		} else {
 			owner.restartAgent(gc, identifier)
 		}
@@ -273,7 +281,9 @@ type restartCreate struct {
 
 func (owner *Grain) closeForRestart(gc *goakt.GrainContext, operation *restart) {
 	identifier := operation.input.Creation.AgentID
-	requestComponent(gc, gc.Self(), restartClose{identity: operation.input.Creation},
+	requestComponent(
+		gc, gc.Self(),
+		restartClose{identity: operation.input.Creation},
 		func(gc *goakt.GrainContext, result agentactor.Closed, failure error) {
 			if owner.restarts[identifier] != operation {
 				return
@@ -284,20 +294,22 @@ func (owner *Grain) closeForRestart(gc *goakt.GrainContext, operation *restart) 
 				return
 			}
 			ctx := context.WithoutCancel(gc.Context())
-			err := gc.PipeToSelf(func() (any, error) {
-				replacement := operation.input.clone()
-				replacement.Creation.CreationID = uuid.NewString()
-				stored, err := replacement.Storage.Load(ctx, identifier)
-				replacement.Restore = stored != nil
-				if replacement.Restore {
-					replacement.Options = session.CreateOptions{}
-				}
-				return restartPrepared{
-					operation: operation,
-					input:     replacement,
-					err:       err,
-				}, nil
-			})
+			err := gc.PipeToSelf(
+				func() (any, error) {
+					replacement := operation.input.clone()
+					replacement.Creation.CreationID = uuid.NewString()
+					stored, err := replacement.Storage.Load(ctx, identifier)
+					replacement.Restore = stored != nil
+					if replacement.Restore {
+						replacement.Options = session.CreateOptions{}
+					}
+					return restartPrepared{
+						operation: operation,
+						input:     replacement,
+						err:       err,
+					}, nil
+				},
+			)
 			if err != nil {
 				owner.failRestart(operation, err)
 			}

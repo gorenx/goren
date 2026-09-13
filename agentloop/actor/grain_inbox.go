@@ -11,6 +11,9 @@ import (
 	"github.com/tochemey/goakt/v4/reentrancy"
 )
 
+// executePending is an Inbox wakeup after the committing admission is confirmed.
+type executePending struct{ creationID string }
+
 // readActivity observes pending input and execution status without claiming work.
 func (owner *Grain) readActivity(gc *goakt.GrainContext, input ReadActivity) {
 	result := Activity{
@@ -176,6 +179,13 @@ func (owner *Grain) promote(gc *goakt.GrainContext, input Promote) {
 // Inbox commands propose mutations; Session commit acknowledgement precedes business confirmation.
 func (owner *Grain) receiveInbox(gc *goakt.GrainContext) bool {
 	switch input := gc.Message().(type) {
+	case executePending:
+		if owner.checkCreation(input.creationID) == nil {
+			err := owner.business.Run(owner.services(gc))
+			if err != nil {
+				owner.services(gc).Observer.ExecutionFailed(err)
+			}
+		}
 	case ReadActivity:
 		owner.readActivity(gc, input)
 	case Followup:

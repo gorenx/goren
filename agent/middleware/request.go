@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"errors"
+
 	"github.com/gorenx/goren/agent"
 	"github.com/gorenx/goren/llm"
 )

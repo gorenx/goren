@@ -138,8 +138,8 @@ func TestCreatorRestoresNamedConfigurationThroughOrdinaryOwners(t *testing.T) {
 	}); configured.Err != nil {
 		t.Fatal(configured.Err)
 	}
-	installer, sender, parent := installParent(t, fixture, fixture.authority, starter)
-	awaitInstallation(t, fixture, installer, parent.Creation, Ready)
+	stewardProvider, sender, parent := installParent(t, fixture, fixture.authority, starter)
+	awaitInstallation(t, fixture, stewardProvider, parent.Creation, Ready)
 	initial := settings.Values{
 		Model: agent.Options{
 			Model:     "review-v1",
@@ -369,8 +369,8 @@ func TestCreatorInheritsCurrentParentConfigurationForDefaultCompanion(t *testing
 	if _, err := starter.Settings.UpdateCompanion(t.Context(), "reviewer", 0, policy); err != nil {
 		t.Fatal(err)
 	}
-	installer, sender, parentInput := installParent(t, fixture, fixture.authority, starter)
-	awaitInstallation(t, fixture, installer, parentInput.Creation, Ready)
+	stewardProvider, sender, parentInput := installParent(t, fixture, fixture.authority, starter)
+	awaitInstallation(t, fixture, stewardProvider, parentInput.Creation, Ready)
 	child := awaitPhase(t, sender, "reviewer", Ready)
 	view, err := starter.Settings.Describe(t.Context())
 	if err != nil {
@@ -472,8 +472,8 @@ func TestCreatorIncludesParentSessionSchemaAdditions(t *testing.T) {
 		Settings: fixture.creator.settings,
 		Storage:  fixture.creator.storage,
 	}
-	installer, sender, parent := installParent(t, fixture, fixture.authority, starter)
-	awaitInstallation(t, fixture, installer, parent.Creation, Ready)
+	stewardProvider, sender, parent := installParent(t, fixture, fixture.authority, starter)
+	awaitInstallation(t, fixture, stewardProvider, parent.Creation, Ready)
 	resolved, err := starter.Resolve(t.Context(), parent.Creation, companions.Config{
 		Inherit: companions.Inheritance{
 			Tools: companions.InheritAllTools,

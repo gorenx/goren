@@ -3,14 +3,14 @@ package loopactor
 import (
 	"context"
 	"errors"
-	middlewareactor "github.com/gorenx/goren/agent/middleware/actor"
 	"time"
-
-	llmactor "github.com/gorenx/goren/llm/actor"
 
 	"github.com/google/uuid"
 	"github.com/gorenx/goren/agent"
+	agentactor "github.com/gorenx/goren/agent/actor"
+	middlewareactor "github.com/gorenx/goren/agent/middleware/actor"
 	"github.com/gorenx/goren/agentloop"
+	llmactor "github.com/gorenx/goren/llm/actor"
 	goakt "github.com/tochemey/goakt/v4/actor"
 )
 
@@ -47,6 +47,17 @@ type Grain struct {
 	handlers       middlewareactor.Handlers
 	tools          *goakt.GrainIdentity
 	replyTimeout   time.Duration
+}
+
+// RuntimeName returns this service's stable address within a Session lifetime.
+// Business identity is carried explicitly in messages, never parsed from this name.
+func RuntimeName(identifier string) string { return identifier + ".agentloop" }
+
+func (owner *Grain) checkCreation(identifier string) error {
+	if identifier == "" || owner.creationID != identifier {
+		return errors.New("agentloop: creation is not authorized or current")
+	}
+	return nil
 }
 
 // OnActivate starts without a Session binding or mutable business dependencies.
@@ -89,11 +100,69 @@ func (owner *Grain) OnReceive(gc *goakt.GrainContext) {
 	}) {
 		return
 	}
-	if owner.receiveCapabilities(gc) || owner.receiveInitialization(gc) ||
-		owner.receiveInbox(gc) || owner.receiveLifecycle(gc) {
+	if owner.receiveDelivery(gc) || owner.receiveInitialization(gc) ||
+		owner.receiveInbox(gc) {
 		return
 	}
-	gc.Unhandled()
+	switch input := gc.Message().(type) {
+	case agentactor.BeginMaintenance:
+		owner.beginMaintenance(gc, input)
+	case agentactor.FinishMaintenance:
+		owner.finishMaintenance(gc, input)
+	case completeCancel:
+		owner.finishCancellation(gc, input)
+	case Cancel:
+		owner.cancel(gc, input)
+	case WhenIdle:
+		owner.whenIdle(gc, input)
+	case idleObserved:
+		owner.confirmIdle(gc, input)
+	case agentactor.Verify:
+		failure := owner.checkCreation(input.CreationID)
+		if failure == nil && (input.InstanceID == "" || input.InstanceID != owner.instanceID) {
+			failure = errors.New("agentloop: activation is not current")
+		}
+		gc.Response(agentactor.Verified{
+			Err: failure,
+		})
+	case agentactor.PrepareClose:
+		owner.requestClosePreparation(gc, input)
+	case closePreparation:
+		owner.confirmClosePreparation(gc, input)
+	case agentactor.CloseResources:
+		owner.closeResources(gc, input)
+	default:
+		gc.Unhandled()
+	}
+}
+
+func (owner *Grain) services(gc *goakt.GrainContext) agentloop.Services {
+	scope := serviceScope{
+		owner: owner,
+		gc:    gc,
+	}
+	return agentloop.Services{
+		Conversation: sessionPort{scope: scope},
+		Prompts:      promptPort{scope: scope},
+		Middleware:   middlewarePort{scope: scope},
+		Models:       modelPort{scope: scope},
+		Tools:        toolPort{scope: scope},
+		Observer:     scope,
+	}
+}
+
+func (owner *Grain) receiveDelivery(gc *goakt.GrainContext) bool {
+	input, ok := gc.Message().(capabilityDelivery)
+	if !ok {
+		return false
+	}
+	if owner.checkCreation(input.creationID) != nil {
+		return true
+	}
+	owner.deliveries--
+	delete(owner.cancellations, input.id)
+	input.accept(owner.services(gc))
+	return true
 }
 
 // publishStatus reports business transitions without maintaining another state machine.

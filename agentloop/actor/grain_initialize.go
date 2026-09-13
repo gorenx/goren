@@ -41,17 +41,20 @@ func (owner *Grain) initialize(gc *goakt.GrainContext, input agentactor.Initiali
 		})
 		return
 	}
-	if err := gc.EnableReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.StashNonReentrant))); err != nil {
-		gc.Response(agentactor.Initialized{
-			Err: err,
-		})
+	err := gc.EnableReentrancy(reentrancy.New(reentrancy.WithMode(reentrancy.StashNonReentrant)))
+	if err != nil {
+		gc.Response(
+			agentactor.Initialized{Err: err},
+		)
 		return
 	}
 	reply := gc.DeferResponse()
 	if reply == nil {
-		gc.Response(agentactor.Initialized{
-			Err: errors.New("agentloop: initialization requires an asynchronous request"),
-		})
+		gc.Response(
+			agentactor.Initialized{
+				Err: errors.New("agentloop: initialization requires an asynchronous request"),
+			},
+		)
 		return
 	}
 	ctx, cancel := context.WithCancel(gc.Context())
@@ -62,18 +65,20 @@ func (owner *Grain) initialize(gc *goakt.GrainContext, input agentactor.Initiali
 	}
 	owner.initialization = operation
 	authorized := make(chan error, 1)
-	if err := gc.PipeToSelf(func() (any, error) {
-		var failure error
-		select {
-		case failure = <-authorized:
-		case <-ctx.Done():
-			failure = context.Cause(ctx)
-		}
-		return initializationAuthorized{
-			operation: operation,
-			err:       failure,
-		}, nil
-	}); err != nil {
+	if err := gc.PipeToSelf(
+		func() (any, error) {
+			var failure error
+			select {
+			case failure = <-authorized:
+			case <-ctx.Done():
+				failure = context.Cause(ctx)
+			}
+			return initializationAuthorized{
+				operation: operation,
+				err:       failure,
+			}, nil
+		},
+	); err != nil {
 		owner.finishInitialization(operation, err)
 		return
 	}
@@ -121,44 +126,54 @@ func (owner *Grain) restoreInbox(gc *goakt.GrainContext, input initializationAut
 	ctx, cancel := context.WithCancel(context.WithoutCancel(gc.Context()))
 	operation.cancel = cancel
 	completed := make(chan initializationRestored, 1)
-	if err := gc.PipeToSelf(func() (any, error) {
-		select {
-		case result := <-completed:
-			return result, nil
-		case <-ctx.Done():
-			return initializationRestored{
-				operation: operation,
-				err:       context.Cause(ctx),
-			}, nil
-		}
-	}); err != nil {
+
+	err := gc.PipeToSelf(
+		func() (any, error) {
+			select {
+			case result := <-completed:
+				return result, nil
+			case <-ctx.Done():
+				return initializationRestored{
+					operation: operation,
+					err:       context.Cause(ctx),
+				}, nil
+			}
+		},
+	)
+	if err != nil {
 		owner.finishInitialization(operation, err)
 		return
 	}
-	gc.RequestGrain(owner.conversation, sessionactor.Read{
-		CreationID: owner.creationID,
-	}, goakt.WithRequestTimeout(0)).Then(func(payload any, failure error) {
-		if owner.initialization != operation {
-			return
-		}
-		if failure == nil {
-			view, ok := payload.(sessionactor.View)
-			switch {
-			case !ok:
-				failure = errors.New("agentloop: invalid Session read response")
-			case view.Err != nil:
-				failure = view.Err
-			case view.Header.ID != operation.input.AgentID || view.Snapshot.Barrier.SessionID != view.Header.ID:
-				failure = errors.New("agentloop: Session identity mismatch")
-			default:
-				failure = owner.business.Restore(view.Header, view.Snapshot)
+	gc.RequestGrain(
+		owner.conversation,
+		sessionactor.Read{
+			CreationID: owner.creationID,
+		},
+		goakt.WithRequestTimeout(0),
+	).Then(
+		func(payload any, failure error) {
+			if owner.initialization != operation {
+				return
 			}
-		}
-		completed <- initializationRestored{
-			operation: operation,
-			err:       failure,
-		}
-	})
+			if failure == nil {
+				view, ok := payload.(sessionactor.View)
+				switch {
+				case !ok:
+					failure = errors.New("agentloop: invalid Session read response")
+				case view.Err != nil:
+					failure = view.Err
+				case view.Header.ID != operation.input.AgentID || view.Snapshot.Barrier.SessionID != view.Header.ID:
+					failure = errors.New("agentloop: Session identity mismatch")
+				default:
+					failure = owner.business.Restore(view.Header, view.Snapshot)
+				}
+			}
+			completed <- initializationRestored{
+				operation: operation,
+				err:       failure,
+			}
+		},
+	)
 }
 
 func (owner *Grain) finishInitialization(operation *initialization, failure error) {
@@ -171,9 +186,9 @@ func (owner *Grain) finishInitialization(operation *initialization, failure erro
 		failure = owner.business.Initialize()
 	}
 	operation.cancel()
-	operation.reply.Response(agentactor.Initialized{
-		Err: failure,
-	})
+	operation.reply.Response(
+		agentactor.Initialized{Err: failure},
+	)
 }
 
 // Initialization advances authorization, Session restoration, and Prompt binding.
@@ -222,5 +237,6 @@ func (owner *Grain) initializePrompt(gc *goakt.GrainContext, input initializatio
 				}
 			}
 			owner.finishInitialization(operation, failure)
-		})
+		},
+	)
 }

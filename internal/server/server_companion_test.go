@@ -155,7 +155,7 @@ func TestServerInstallsDefaultCompanionForEachParent(t *testing.T) {
 		children[parentID] = rows[0].ID
 		child := serverReady(t, ctx, process, rows[0].ID)
 		if len(child.Components) != 1 {
-			t.Fatalf("Companion %s inherited the Installer: %+v", child.Creation.AgentID, child.Components)
+			t.Fatalf("Companion %s inherited the StewardProvider: %+v", child.Creation.AgentID, child.Components)
 		}
 		rename, err := json.Marshal(struct {
 			SessionID string `json:"sessionId"`
