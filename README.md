@@ -21,16 +21,6 @@ Capabilities are composed explicitly through typed Go configuration and statical
 
 This structure is intended to make Agent behavior easier to trace, extend, and test while keeping execution, persistence, and transport responsibilities clear.
 
-## Relationship to DeepSeek Agent Harness
-
-DeepSeek Agent Harness is a reference for selected implementation patterns and behaviors. Goren makes its own decisions about ownership, lifecycle, and public contracts; it does not promise complete behavioral or protocol compatibility.
-
-Goren owns its HTTP `/api` carrier, WebSocket downlinks, request correlation, cancellation, and API schemas. Similar endpoint or event names do not establish compatibility with an existing Harness client.
-
-The project focuses on the Go Agent server and its core conversation interface. The original Harness browser runtime, full Web product, and SDKs are outside this scope. Broader interfaces such as ACP and MCP Server are deferred. An MCP client connection does not make Goren an MCP Server.
-
-Goren is under active development. A component's presence in the repository does not by itself mean it is connected to the default server or ready for production use.
-
 ## License
 
 Goren is available under the [MIT License](./LICENSE). Copied or derived portions of DeepSeek Agent Harness retain the applicable license notices and attribution.
